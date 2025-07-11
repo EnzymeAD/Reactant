@@ -1,4 +1,4 @@
-# <img src="https://enzyme.mit.edu/logo.svg" width="75" align=left> The Enzyme High-Performance Automatic Differentiator of LLVM and MLIR
+# <img src="https://enzyme.mit.edu/logo.svg" width="75" align=left> Reactant 
 
 
 Enzyme is a plugin that performs automatic differentiation (AD) of statically analyzable LLVM and MLIR.
