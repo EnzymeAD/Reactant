@@ -47,6 +47,8 @@ constexpr auto StructKind = clang::TagTypeKind::Struct;
 constexpr auto StructKind = clang::TagTypeKind::TTK_Struct;
 #endif
 
+extern llvm::cl::opt<std::string> ReactantBackend;
+
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
 protected:
@@ -104,6 +106,9 @@ public:
     //bool contains = false;
 
 
+    if (StringRef(ReactantBackend.getValue()).starts_with("xla")) {
+      llvm::errs() <<" note: you need to add -lReactantExtra\n";
+    }
     std::string inFile;
     for (auto in : CI.getFrontendOpts().Inputs) {
     	if (in.isFile()) {
