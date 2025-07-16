@@ -151,10 +151,30 @@ void fixup(Module &M) {
     LLVM_DEBUG(dbgs() << "StubFunc " << *StubFunc << "\n");
 
     AllocaInst *ArgPtrAlloca = cast<AllocaInst>(ArgPtr);
-    assert(ArgPtrAlloca->getAllocatedType()->isPointerTy());
+
+    unsigned NumArgs = 0;
+
+    {
+      bool legal = false;
+      if (auto AT = dyn_cast<ArrayType>(ArgPtrAlloca->getAllocatedType())) {
+        if (AT->getElementType()->isPointerTy()) {
+          NumArgs = AT->getNumElements();
+          legal = true;
+        }
+      } else if (isa<PointerType>(ArgPtrAlloca->getAllocatedType())) {
+        if (auto CT = dyn_cast<ConstantInt>(ArgPtrAlloca->getArraySize())) {
+          NumArgs = CT->getZExtValue();
+          legal = true;
+        }
+      }
+      if (!legal) {
+        llvm::errs() << "CI: " << *CI << "\n";
+        llvm::errs() << " argptr: " << *ArgPtr << "\n";
+        llvm_unreachable("Unknown number of arguments to cuda call");
+      }
+    }
+
     LLVM_DEBUG(dbgs() << "ALLOCA " << *ArgPtrAlloca << "\n");
-    unsigned NumArgs =
-        cast<ConstantInt>(ArgPtrAlloca->getArraySize())->getZExtValue();
     unsigned ArgsOffset = Args.size();
     for (unsigned I = 0; I < NumArgs; I++)
       Args.push_back(nullptr);
@@ -173,10 +193,14 @@ void fixup(Module &M) {
         Value *GepIdx = Gep->idx_begin()->get();
         ArgIdx = cast<ConstantInt>(GepIdx)->getSExtValue();
         assert(ArgIdx >= 0);
-        assert(Gep->getSourceElementType()->isPointerTy());
+        if (Gep->getSourceElementType()->isIntegerTy(8)) {
+          ArgIdx /= M.getDataLayout().getPointerSize();
+        } else if (!Gep->getSourceElementType()->isPointerTy()) {
+          llvm::errs() << "Gep: " << *Gep << "\n";
+          llvm_unreachable("Unknown gep source");
+        }
         ThisArgPtr = Gep;
       } else if (SI && SI->getPointerOperand() == ArgPtr) {
-        assert(false && "Should never happen if we properly run in StartEP");
         ArgIdx = 0;
         ThisArgPtr = ArgPtr;
       } else {
@@ -196,6 +220,19 @@ void fixup(Module &M) {
             for (Use &ThisArgAllocaUse : ThisArgAlloca->uses()) {
               LLVM_DEBUG(dbgs()
                          << "RealSI " << *ThisArgAllocaUse.getUser() << "\n");
+              if (auto MTI =
+                      dyn_cast<MemTransferInst>(ThisArgAllocaUse.getUser())) {
+                if (MTI->getDest() == ThisArgAlloca) {
+                  if (auto CI = dyn_cast<ConstantInt>(MTI->getLength())) {
+                    if (CI->getValue().uge(
+                            M.getDataLayout().getPointerSize())) {
+                      IRBuilder<> B(MTI->getNextNode());
+                      auto ld = B.CreateLoad(B.getPtrTy(), MTI->getSource());
+                      Args[ArgsOffset + ArgIdx] = ld;
+                    }
+                  }
+                }
+              }
               StoreInst *RealSI =
                   dyn_cast<StoreInst>(ThisArgAllocaUse.getUser());
               if (RealSI && RealSI->getPointerOperand() == ThisArgAlloca) {
@@ -207,8 +244,7 @@ void fixup(Module &M) {
             if (Args[ArgsOffset + ArgIdx] == nullptr) {
               errs() << "WARNING: Could not find corresponding store to `"
                      << *ThisArgAlloca << "'.\n";
-              assert(cast<ConstantInt>(ThisArgAlloca->getArraySize())
-                         ->getZExtValue() == 1);
+              assert(NumArgs == 1);
               Args[ArgsOffset + ArgIdx] =
                   UndefValue::get(ThisArgAlloca->getAllocatedType());
             }
