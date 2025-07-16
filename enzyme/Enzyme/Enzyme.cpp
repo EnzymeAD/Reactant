@@ -32,6 +32,9 @@
 #include "llvm/ADT/StringRef.h"
 #include <dlfcn.h>
 
+#include <llvm/IR/IntrinsicInst.h>
+#include <llvm/Support/PointerLikeTypeTraits.h>
+
 #if LLVM_VERSION_MAJOR >= 16
 #define private public
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -120,6 +123,10 @@ SmallVector<CallBase *> gatherCallers(Function *F) {
 }
 
 void fixup(Module &M) {
+
+  if (getenv("ENZYME_CLANG_DUMP_BEFORE_FIXUP"))
+    llvm::errs() << "BEFORE FIXUP:\n" << M << "\n";
+
   auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
   if (!LaunchKernelFunc)
     return;
@@ -140,17 +147,105 @@ void fixup(Module &M) {
         BlockDim2, SharedMemSize, StreamPtr,
     };
     auto StubFunc = cast<Function>(CI->getArgOperand(0));
+    
+    LLVM_DEBUG(dbgs() << "StubFunc " << *StubFunc << "\n");
 
-    size_t idx = 0;
-    for (auto &Arg : StubFunc->args()) {
-      auto gep = Builder.CreateConstInBoundsGEP1_64(
-          llvm::PointerType::getUnqual(CI->getContext()), ArgPtr, idx);
-      auto ld = Builder.CreateLoad(
-          llvm::PointerType::getUnqual(CI->getContext()), gep);
-      ld = Builder.CreateLoad(Arg.getType(), ld);
-      Args.push_back(ld);
-      idx++;
+    AllocaInst *ArgPtrAlloca = cast<AllocaInst>(ArgPtr);
+    assert(ArgPtrAlloca->getAllocatedType()->isPointerTy());
+    LLVM_DEBUG(dbgs() << "ALLOCA " << *ArgPtrAlloca << "\n");
+    unsigned NumArgs =
+        cast<ConstantInt>(ArgPtrAlloca->getArraySize())->getZExtValue();
+    unsigned ArgsOffset = Args.size();
+    for (unsigned I = 0; I < NumArgs; I++)
+      Args.push_back(nullptr);
+
+        LLVM_DEBUG(dbgs() << "ARG PTR " << *ArgPtr << "\n");
+    for (Use &ArgPtrUse : ArgPtr->uses()) {
+      LLVM_DEBUG(dbgs() << "USE " << *ArgPtrUse.getUser() << "\n");
+
+      Value *ThisArgPtr;
+      int ArgIdx;
+      auto Gep = dyn_cast<GetElementPtrInst>(ArgPtrUse.getUser());
+      auto SI = dyn_cast<StoreInst>(ArgPtrUse.getUser());
+      if (Gep && Gep->getPointerOperand() == ArgPtr) {
+        assert(Gep->getPointerOperand() == ArgPtr);
+        assert(Gep->getNumIndices() == 1);
+        Value *GepIdx = Gep->idx_begin()->get();
+        ArgIdx = cast<ConstantInt>(GepIdx)->getSExtValue();
+        assert(ArgIdx >= 0);
+        assert(Gep->getSourceElementType()->isPointerTy());
+        ThisArgPtr = Gep;
+      } else if (SI && SI->getPointerOperand() == ArgPtr) {
+        assert(false && "Should never happen if we properly run in StartEP");
+        ArgIdx = 0;
+        ThisArgPtr = ArgPtr;
+      } else {
+        continue;
+      }
+      LLVM_DEBUG(dbgs() << *ThisArgPtr << "\n");
+
+      for (Use &ThisArgPtrUse : ThisArgPtr->uses()) {
+        if (StoreInst *SI = dyn_cast<StoreInst>(ThisArgPtrUse.getUser())) {
+          assert(SI->getPointerOperand() == ThisArgPtr);
+          LLVM_DEBUG(dbgs() << ArgsOffset << " " << ArgIdx << " " << *SI << " "
+                            << "\n");
+          if (AllocaInst *ThisArgAlloca =
+                  dyn_cast<AllocaInst>(SI->getValueOperand())) {
+            LLVM_DEBUG(dbgs() << ArgsOffset << " " << ArgIdx << " " << *SI
+                              << " " << *ThisArgAlloca << "\n");
+            for (Use &ThisArgAllocaUse : ThisArgAlloca->uses()) {
+              LLVM_DEBUG(dbgs()
+                         << "RealSI " << *ThisArgAllocaUse.getUser() << "\n");
+              StoreInst *RealSI =
+                  dyn_cast<StoreInst>(ThisArgAllocaUse.getUser());
+              if (RealSI && RealSI->getPointerOperand() == ThisArgAlloca) {
+                LLVM_DEBUG(dbgs() << "YES\n");
+                assert(Args[ArgsOffset + ArgIdx] == nullptr);
+                Args[ArgsOffset + ArgIdx] = RealSI->getValueOperand();
+              }
+            }
+            if (Args[ArgsOffset + ArgIdx] == nullptr) {
+              errs() << "WARNING: Could not find corresponding store to `"
+                     << *ThisArgAlloca << "'.\n";
+              assert(cast<ConstantInt>(ThisArgAlloca->getArraySize())
+                         ->getZExtValue() == 1);
+              Args[ArgsOffset + ArgIdx] =
+                  UndefValue::get(ThisArgAlloca->getAllocatedType());
+            }
+          } else {
+            // TODO this needs to be fixed
+            assert(isa<Argument>(SI->getValueOperand()));
+            errs()
+                << "WARNING: Found argument that we cannot see the stores to `"
+                << *SI->getValueOperand() << "'.\n";
+
+            Args[ArgsOffset + ArgIdx] =
+                ConstantPointerNull::get(PointerType::get(M.getContext(), 0));
+          }
+        }
+      }
     }
+
+    if (NumArgs == 1) {
+      // There is one case where having a null ptr is allowed and it is because
+      // even if the kernel has 0 arguments, the codegen will still allocate a ptr
+      //
+      // i.e. in the case of
+      //   0 args:
+      //     %kernel_args = alloca ptr
+      //   1 arg:
+      //     %kernel_args = alloca ptr
+      //   2 (or more) args:
+      //     %kernel_args = alloca [ 2 x ptr ]
+      //
+      if (Args[Args.size() - 1] == nullptr) {
+        Args.pop_back();
+        NumArgs = 0;
+      }
+    } else {
+      assert(all_of(Args, [](Value *V) {return V != nullptr;}));
+    }
+
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
