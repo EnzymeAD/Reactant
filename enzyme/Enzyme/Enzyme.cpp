@@ -105,8 +105,6 @@ llvm::cl::opt<std::string>
 namespace {
 
 constexpr char cudaLaunchSymbolName[] = "cudaLaunchKernel";
-constexpr char kernelPrefix[] = "__mlir_launch_kernel_";
-constexpr char kernelCoercedPrefix[] = "__mlir_launch_coerced_kernel_";
 
 constexpr char cudaPushConfigName[] = "__cudaPushCallConfiguration";
 constexpr char cudaPopConfigName[] = "__cudaPopCallConfiguration";
@@ -149,147 +147,12 @@ void fixup(Module &M) {
     auto StubFunc = cast<Function>(CI->getArgOperand(0));
     
     LLVM_DEBUG(dbgs() << "StubFunc " << *StubFunc << "\n");
-
-    AllocaInst *ArgPtrAlloca = cast<AllocaInst>(ArgPtr);
-
-    unsigned NumArgs = 0;
-
-    {
-      bool legal = false;
-      if (auto AT = dyn_cast<ArrayType>(ArgPtrAlloca->getAllocatedType())) {
-        if (AT->getElementType()->isPointerTy()) {
-          NumArgs = AT->getNumElements();
-          legal = true;
-        }
-      } else if (isa<PointerType>(ArgPtrAlloca->getAllocatedType())) {
-        if (auto CT = dyn_cast<ConstantInt>(ArgPtrAlloca->getArraySize())) {
-          NumArgs = CT->getZExtValue();
-          legal = true;
-        }
-      }
-      if (!legal) {
-        llvm::errs() << "CI: " << *CI << "\n";
-        llvm::errs() << " argptr: " << *ArgPtr << "\n";
-        llvm_unreachable("Unknown number of arguments to cuda call");
-      }
-    }
-
-    LLVM_DEBUG(dbgs() << "ALLOCA " << *ArgPtrAlloca << "\n");
-    unsigned ArgsOffset = Args.size();
-    for (unsigned I = 0; I < NumArgs; I++)
-      Args.push_back(nullptr);
-
-        LLVM_DEBUG(dbgs() << "ARG PTR " << *ArgPtr << "\n");
-    for (Use &ArgPtrUse : ArgPtr->uses()) {
-      LLVM_DEBUG(dbgs() << "USE " << *ArgPtrUse.getUser() << "\n");
-
-      Value *ThisArgPtr;
-      int ArgIdx;
-      auto Gep = dyn_cast<GetElementPtrInst>(ArgPtrUse.getUser());
-      auto SI = dyn_cast<StoreInst>(ArgPtrUse.getUser());
-      if (Gep && Gep->getPointerOperand() == ArgPtr) {
-        assert(Gep->getPointerOperand() == ArgPtr);
-        assert(Gep->getNumIndices() == 1);
-        Value *GepIdx = Gep->idx_begin()->get();
-        ArgIdx = cast<ConstantInt>(GepIdx)->getSExtValue();
-        assert(ArgIdx >= 0);
-        if (Gep->getSourceElementType()->isIntegerTy(8)) {
-          ArgIdx /= M.getDataLayout().getPointerSize();
-        } else if (!Gep->getSourceElementType()->isPointerTy()) {
-          llvm::errs() << "Gep: " << *Gep << "\n";
-          llvm_unreachable("Unknown gep source");
-        }
-        ThisArgPtr = Gep;
-      } else if (SI && SI->getPointerOperand() == ArgPtr) {
-        ArgIdx = 0;
-        ThisArgPtr = ArgPtr;
-      } else {
-        continue;
-      }
-      LLVM_DEBUG(dbgs() << *ThisArgPtr << "\n");
-
-      for (Use &ThisArgPtrUse : ThisArgPtr->uses()) {
-        if (StoreInst *SI = dyn_cast<StoreInst>(ThisArgPtrUse.getUser())) {
-          assert(SI->getPointerOperand() == ThisArgPtr);
-          LLVM_DEBUG(dbgs() << ArgsOffset << " " << ArgIdx << " " << *SI << " "
-                            << "\n");
-          if (AllocaInst *ThisArgAlloca =
-                  dyn_cast<AllocaInst>(SI->getValueOperand())) {
-            LLVM_DEBUG(dbgs() << ArgsOffset << " " << ArgIdx << " " << *SI
-                              << " " << *ThisArgAlloca << "\n");
-            for (Use &ThisArgAllocaUse : ThisArgAlloca->uses()) {
-              LLVM_DEBUG(dbgs()
-                         << "RealSI " << *ThisArgAllocaUse.getUser() << "\n");
-              if (auto MTI =
-                      dyn_cast<MemTransferInst>(ThisArgAllocaUse.getUser())) {
-                if (MTI->getDest() == ThisArgAlloca) {
-                  if (auto CI = dyn_cast<ConstantInt>(MTI->getLength())) {
-                    if (CI->getValue().uge(
-                            M.getDataLayout().getPointerSize())) {
-                      IRBuilder<> B(MTI->getNextNode());
-                      auto ld = B.CreateLoad(B.getPtrTy(), MTI->getSource());
-                      Args[ArgsOffset + ArgIdx] = ld;
-                    }
-                  }
-                }
-              }
-              StoreInst *RealSI =
-                  dyn_cast<StoreInst>(ThisArgAllocaUse.getUser());
-              if (RealSI && RealSI->getPointerOperand() == ThisArgAlloca) {
-                LLVM_DEBUG(dbgs() << "YES\n");
-                assert(Args[ArgsOffset + ArgIdx] == nullptr);
-                Args[ArgsOffset + ArgIdx] = RealSI->getValueOperand();
-              }
-            }
-            if (Args[ArgsOffset + ArgIdx] == nullptr) {
-              errs() << "WARNING: Could not find corresponding store to `"
-                     << *ThisArgAlloca << "'.\n";
-              assert(NumArgs == 1);
-              Args[ArgsOffset + ArgIdx] =
-                  UndefValue::get(ThisArgAlloca->getAllocatedType());
-            }
-          } else {
-            // TODO this needs to be fixed
-            assert(isa<Argument>(SI->getValueOperand()));
-            errs()
-                << "WARNING: Found argument that we cannot see the stores to `"
-                << *SI->getValueOperand() << "'.\n";
-
-            Args[ArgsOffset + ArgIdx] =
-                ConstantPointerNull::get(PointerType::get(M.getContext(), 0));
-          }
-        }
-      }
-    }
-
-    if (NumArgs == 1) {
-      // There is one case where having a null ptr is allowed and it is because
-      // even if the kernel has 0 arguments, the codegen will still allocate a ptr
-      //
-      // i.e. in the case of
-      //   0 args:
-      //     %kernel_args = alloca ptr
-      //   1 arg:
-      //     %kernel_args = alloca ptr
-      //   2 (or more) args:
-      //     %kernel_args = alloca [ 2 x ptr ]
-      //
-      if (Args[Args.size() - 1] == nullptr) {
-        Args.pop_back();
-        NumArgs = 0;
-      }
-    } else {
-      assert(all_of(Args, [](Value *V) {return V != nullptr;}));
-    }
+    Args.push_back(ArgPtr);
 
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = Function::Create(
-        FunctionType::get(Type::getVoidTy(M.getContext()), ArgTypes,
-                          /*isVarAtg=*/false),
-        llvm::GlobalValue::ExternalLinkage,
-        kernelCoercedPrefix + StubFunc->getName(), M);
+    auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase1", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     CoercedKernels.insert(Builder.CreateCall(MlirLaunchFunc, Args));
     if (auto II = dyn_cast<InvokeInst>(CI)) {
@@ -366,8 +229,7 @@ void fixup(Module &M) {
       KernelLaunch = dyn_cast<CallInst>(It);
     } while (!It->isTerminator() &&
              !(KernelLaunch && KernelLaunch->getCalledFunction() &&
-               KernelLaunch->getCalledFunction()->getName().starts_with(
-                   kernelCoercedPrefix)));
+               KernelLaunch->getCalledFunction()->getName() == "__mlir_cuda_caller_phase1"));
 
     assert(!It->isTerminator());
 
@@ -393,7 +255,7 @@ void fixup(Module &M) {
   }
   for (CallBase *CI : CoercedKernels) {
     IRBuilder<> Builder(CI);
-    auto FuncPtr = CI->getArgOperand(0);
+    auto FuncPtr = cast<Function>(CI->getArgOperand(0));
     auto GridDim1 = CI->getArgOperand(1);
     auto GridDim2 = CI->getArgOperand(2);
     auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
@@ -414,17 +276,12 @@ void fixup(Module &M) {
         FuncPtr,   GridDimX,  GridDimY,      GridDimZ,  BlockDimX,
         BlockDimY, BlockDimZ, SharedMemSize, StreamPtr,
     };
-    auto StubFunc = cast<Function>(CI->getArgOperand(0));
     for (unsigned I = 7; I < CI->getNumOperands() - 1; I++)
       Args.push_back(CI->getArgOperand(I));
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = Function::Create(
-        FunctionType::get(Type::getVoidTy(M.getContext()), ArgTypes,
-                          /*isVarAtg=*/false),
-        llvm::GlobalValue::ExternalLinkage, kernelPrefix + StubFunc->getName(),
-        M);
+    auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase2", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     Builder.CreateCall(MlirLaunchFunc, Args);
     CI->eraseFromParent();
@@ -563,16 +420,40 @@ public:
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << "post link: " << M << "\n";
 
-    for (Function &F : make_early_inc_range(M)) {
-      if (!F.empty())
-        continue;
-      if (F.getName() == "cudaMalloc") {
-        continue;
-        auto entry = BasicBlock::Create(F.getContext(), "entry", &F);
-        IRBuilder<> B(entry);
-      }
+    if (auto F = M.getFunction("__mlir_cuda_caller_phase2")) {
+        for (auto U : make_early_inc_range(F->users())) {
+         auto CI = cast<CallInst>(U);
+         SmallVector<Value*> args;
+	 for (auto &arg : CI->args()) {
+	   args.push_back(arg.get());
+	 }
+	 auto F = cast<Function>(args[0]);
+	 auto ptr = args.pop_back_val();
+         IRBuilder<> B(CI);
+	 
+	 auto ptrty = PointerType::getUnqual(F->getContext());
+	 for (size_t i=0; i<F->getFunctionType()->getNumParams(); i++) {
+	   auto gep = B.CreateConstInBoundsGEP1_32(ptrty, ptr, i);
+	   auto ld = B.CreateLoad(ptrty, gep);
+	   if (auto T = F->getParamByValType(i)) {
+	     (void)T;
+	     args.push_back(ld);
+	   } else {
+	     auto ld2 = B.CreateLoad(F->getFunctionType()->getParamType(i), ld);
+	     args.push_back(ld2);
+	   }
+	 }
+
+	 auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase3", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+
+         B.CreateCall(MlirLaunchFunc, args);
+         CI->eraseFromParent();
+        }
     }
 
+    if (getenv("DEBUG_REACTANT"))
+      llvm::errs() << "post link2: " << M << "\n";
+    
     fixup(M);
     for (auto todel : {"__cuda_register_globals", "__cuda_module_ctor",
                        "__cuda_module_dtor"}) {
