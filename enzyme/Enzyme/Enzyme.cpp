@@ -225,7 +225,7 @@ void fixup(Module &M) {
     CallBase *KernelLaunch = PopCall;
     Instruction *It = PopCall;
     do {
-      It = It->getNextNonDebugInstruction();
+      It = It->getNextNode();
       KernelLaunch = dyn_cast<CallInst>(It);
     } while (!It->isTerminator() &&
              !(KernelLaunch && KernelLaunch->getCalledFunction() &&
