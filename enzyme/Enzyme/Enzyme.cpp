@@ -594,6 +594,45 @@ class ExporterNewPM final : public AnalysisInfoMixin<ExporterNewPM> {
 private:
   static llvm::AnalysisKey Key;
 
+  // Add bodies returning the poison value to declarations of Enzyme internal
+  // functions. These are not supposed to be called.
+  void definePoisonEnzymeCalls(llvm::Module &M) {
+    for (llvm::Function &Fn : M) {
+      if (!Fn.isDeclaration())
+        continue;
+      if (!(Fn.getName().contains("__enzyme_float") ||
+            Fn.getName().contains("__enzyme_double") ||
+            Fn.getName().contains("__enzyme_integer") ||
+            Fn.getName().contains("__enzyme_pointer") ||
+            Fn.getName().contains("__enzyme_virtualreverse") ||
+            Fn.getName().contains("__enzyme_call_inactive") ||
+            Fn.getName().contains("__enzyme_autodiff") ||
+            Fn.getName().contains("__enzyme_fwddiff") ||
+            Fn.getName().contains("__enzyme_fwdsplit") ||
+            Fn.getName().contains("__enzyme_augmentfwd") ||
+            Fn.getName().contains("__enzyme_augmentsize") ||
+            Fn.getName().contains("__enzyme_reverse") ||
+            Fn.getName().contains("__enzyme_truncate") ||
+            Fn.getName().contains("__enzyme_batch") ||
+            Fn.getName().contains("__enzyme_error_estimate") ||
+            Fn.getName().contains("__enzyme_trace") ||
+            Fn.getName().contains("__enzyme_condition")))
+        continue;
+
+      auto *BB = llvm::BasicBlock::Create(M.getContext(), "", &Fn);
+      llvm::IRBuilder<> Builder(BB);
+
+      llvm::Type *RT = Fn.getReturnType();
+      if (RT->isVoidTy()) {
+        Builder.CreateRetVoid();
+        continue;
+      }
+
+      auto *Poison = llvm::PoisonValue::get(RT);
+      Builder.CreateRet(Poison);
+    }
+  }
+
 public:
   using Result = llvm::PreservedAnalyses;
   std::string firstfile;
@@ -610,6 +649,7 @@ public:
       exit(1);
     }
 
+    definePoisonEnzymeCalls(M);
     file << M;
     return PreservedAnalyses::all();
   }
