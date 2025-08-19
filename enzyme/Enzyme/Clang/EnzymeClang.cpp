@@ -193,6 +193,117 @@ static clang::FrontendPluginRegistry::Add<EnzymeAction<EnzymePlugin>>
 #if LLVM_VERSION_MAJOR > 10
 namespace {
 
+static bool ExpectForStatement(const Stmt *St) {
+  if (!isa<ForStmt>(St)) {
+    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
+        << Attr << Attr.isRegularKeywordAttribute() << ExpectedForLoopStatement;
+    return false;
+  }
+  return true;
+}
+
+static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
+                             bool argValue) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc = Attr.getEllipsisLoc();
+
+  DeclContext *declCtx = S.getCurLexicalContext();
+  for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
+    if (tmpCtx->isRecord()) {
+      declCtx = tmpCtx->getParent();
+    }
+  }
+
+  // create global variable at translation unit level
+  auto &Id = AST.Idents.get(FunctionName);
+
+  auto FunctionType =
+      AST.getFunctionType(AST.VoidTy, {AST.getNSUIntegerType()}, {});
+
+  DeclarationName name(&Id);
+  DeclarationNameInfo nameInfo(name, loc);
+  StorageClass SC = SC_PrivateExtern;
+  FunctionDecl *F = FunctionDecl::Create(
+      AST, declCtx, loc, nameInfo, FunctionType, nullptr, SC, false, false,
+      false, ConstexprSpecKind::Unspecified, {});
+  auto &ParamName = AST.Idents.get("enable");
+  auto P =
+      ParmVarDecl::Create(AST, F, loc, loc, &ParamName, AST.getNSUIntegerType(),
+                          nullptr, SC_None, nullptr);
+  F->setParams({P});
+  F->setStorageClass(SC);
+  F->addAttr(clang::UsedAttr::CreateImplicit(AST));
+
+  S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(F));
+
+  TemplateArgumentListInfo *TemplateArgs = nullptr;
+
+  auto rval = ExprValueKind::VK_PRValue;
+
+  auto ForSt = cast<ForStmt>(St);
+  Stmt *body = ForSt->getBody();
+
+  SmallVector<Stmt *> Stmts;
+
+  auto FT = AST.getPointerType(F->getType());
+  auto DR = DeclRefExpr::Create(
+      AST, NestedNameSpecifierLoc(), loc, cast<ValueDecl>(F), false, loc,
+      F->getType(), ExprValueKind::VK_LValue, cast<NamedDecl>(F), TemplateArgs);
+  Expr *expr =
+      ImplicitCastExpr::Create(AST, FT, CastKind::CK_FunctionToPointerDecay, DR,
+                               nullptr, rval, FPOptionsOverride());
+
+  auto Arg = IntegerLiteral::Create(AST, llvm::APInt(64, argValue),
+                                    AST.getNSUIntegerType(), loc);
+  auto BO = CallExpr::Create(AST, expr, {Arg}, F->getType(), rval, loc, {});
+
+  Stmts.push_back(BO);
+  Stmts.push_back(body);
+
+  CompoundStmt *newBody = CompoundStmt::Create(AST, Stmts, {}, loc, loc);
+  ForSt->setBody(newBody);
+}
+
+struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
+  EnzymeLoopMincutEnableAttrInfo() {
+    OptArgs = 1;
+    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
+    // [[plugin::example]] supported.
+    static constexpr Spelling S[] = {
+        {ParsedAttr::AS_GNU, "enzyme_mincut_enable"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "enzyme_mincut_enable"},
+#else
+        {ParsedAttr::AS_C2x, "enzyme_mincut_enable"},
+#endif
+        {ParsedAttr::AS_CXX11, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_CXX11, "enzyme::mincut_enable"}};
+    Spellings = S;
+  }
+
+  bool diagAppertainsToStmt(Sema &S, const ParsedAttr &Attr,
+                            const Stmt *St) const override {
+    return ExpectForStatement(St);
+  }
+
+  AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
+                                   class Attr *&Result) const override {
+    if (Attr.getNumArgs() > 0) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'enzyme_mincut_enable' does not take arguments");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    emitFunctionCall(S, St, "enzyme_set_mincut", true);
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutEnableAttrInfo>
+    X2("enzyme_mincut_enable", "");
+
 struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
   EnzymeLoopCheckpointingEnableAttrInfo() {
     OptArgs = 1;
@@ -231,76 +342,13 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     }
 
-    auto &AST = S.getASTContext();
-    SourceLocation loc = Attr.getEllipsisLoc();
-
-    DeclContext *declCtx = S.getCurLexicalContext();
-    for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
-      if (tmpCtx->isRecord()) {
-        declCtx = tmpCtx->getParent();
-      }
-    }
-
-    // create global variable at translation unit level
-    // todo: make sure that it is unique.
-    auto &Id = AST.Idents.get("__enzyme_set_checkpointing");
-
-    auto FunctionType =
-        AST.getFunctionType(AST.VoidTy, {AST.getNSUIntegerType()}, {});
-
-    DeclarationName name(&Id);
-    DeclarationNameInfo nameInfo(name, loc);
-    StorageClass SC = SC_PrivateExtern;
-    FunctionDecl *F = FunctionDecl::Create(
-        AST, declCtx, loc, nameInfo, FunctionType, nullptr, SC, false, false,
-        false, ConstexprSpecKind::Unspecified, {});
-    auto &ParamName = AST.Idents.get("enable");
-    auto P =
-        ParmVarDecl::Create(AST, F, loc, loc, &ParamName,
-                            AST.getNSUIntegerType(), nullptr, SC_None, nullptr);
-    F->setParams({P});
-    F->setStorageClass(SC);
-    F->addAttr(clang::UsedAttr::CreateImplicit(AST));
-
-    F->dump();
-
-    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(F));
-
-    TemplateArgumentListInfo *TemplateArgs = nullptr;
-
-    auto rval = ExprValueKind::VK_PRValue;
-
-    auto ForSt = cast<ForStmt>(St);
-    Stmt *body = ForSt->getBody();
-
-    SmallVector<Stmt *> Stmts;
-
-    auto FT = AST.getPointerType(F->getType());
-    auto DR = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc,
-                                  cast<ValueDecl>(F), false, loc, F->getType(),
-                                  ExprValueKind::VK_LValue, cast<NamedDecl>(F),
-                                  TemplateArgs);
-    Expr *expr =
-        ImplicitCastExpr::Create(AST, FT, CastKind::CK_FunctionToPointerDecay,
-                                 DR, nullptr, rval, FPOptionsOverride());
-
-    // store true to enzyme_checkpointing_enable
-    auto True = IntegerLiteral::Create(AST, llvm::APInt(64, 1),
-                                       AST.getNSUIntegerType(), loc);
-    auto BO = CallExpr::Create(AST, expr, {True}, F->getType(), rval, loc, {});
-
-    Stmts.push_back(BO);
-    Stmts.push_back(body);
-
-    CompoundStmt *newBody = CompoundStmt::Create(AST, Stmts, {}, loc, loc);
-    ForSt->setBody(newBody);
-
+    emitFunctionCall(S, St, "enzyme_set_checkpointing", true);
     return AttributeApplied;
   }
 };
 
 static ParsedAttrInfoRegistry::Add<EnzymeLoopCheckpointingEnableAttrInfo>
-    X2("enzyme_checkpointing_enable", "");
+    X3("enzyme_checkpointing_enable", "");
 
 struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
   EnzymeFunctionLikeAttrInfo() {
