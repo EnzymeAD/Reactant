@@ -658,8 +658,8 @@ public:
       exit(1);
     }
 
-    definePoisonEnzymeCalls(M);
     file << M;
+    definePoisonEnzymeCalls(M);
     return PreservedAnalyses::all();
   }
 
