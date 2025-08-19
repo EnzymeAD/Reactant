@@ -296,7 +296,7 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     }
 
-    emitFunctionCall(S, St, "enzyme_set_mincut", true);
+    emitFunctionCall(S, St, "__enzyme_set_mincut", true);
     return AttributeApplied;
   }
 };
@@ -336,7 +336,7 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     }
 
-    emitFunctionCall(S, St, "enzyme_set_checkpointing", true);
+    emitFunctionCall(S, St, "__enzyme_set_checkpointing", true);
     return AttributeApplied;
   }
 };
