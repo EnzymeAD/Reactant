@@ -193,7 +193,7 @@ static clang::FrontendPluginRegistry::Add<EnzymeAction<EnzymePlugin>>
 #if LLVM_VERSION_MAJOR > 10
 namespace {
 
-static bool ExpectForStatement(const Stmt *St) {
+static bool ExpectForStatement(Sema &S, const ParsedAttr &Attr, const Stmt *St) {
   if (!isa<ForStmt>(St)) {
     S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
         << Attr << Attr.isRegularKeywordAttribute() << ExpectedForLoopStatement;
@@ -205,7 +205,7 @@ static bool ExpectForStatement(const Stmt *St) {
 static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
                              bool argValue) {
   auto &AST = S.getASTContext();
-  SourceLocation loc = Attr.getEllipsisLoc();
+  SourceLocation loc;
 
   DeclContext *declCtx = S.getCurLexicalContext();
   for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
@@ -283,7 +283,7 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
 
   bool diagAppertainsToStmt(Sema &S, const ParsedAttr &Attr,
                             const Stmt *St) const override {
-    return ExpectForStatement(St);
+    return ExpectForStatement(S, Attr, St);
   }
 
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
@@ -323,13 +323,7 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
 
   bool diagAppertainsToStmt(Sema &S, const ParsedAttr &Attr,
                             const Stmt *St) const override {
-    if (!isa<ForStmt>(St)) {
-      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
-          << Attr << Attr.isRegularKeywordAttribute()
-          << ExpectedForLoopStatement;
-      return false;
-    }
-    return true;
+    return ExpectForStatement(S, Attr, St);
   }
 
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
@@ -479,7 +473,7 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
 };
 
 static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
-    X3("enzyme_function_like", "");
+    X4("enzyme_function_like", "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
@@ -631,7 +625,7 @@ struct EnzymeInactiveAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeInactiveAttrInfo> X4("enzyme_inactive",
+static ParsedAttrInfoRegistry::Add<EnzymeInactiveAttrInfo> X5("enzyme_inactive",
                                                               "");
 
 struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
@@ -735,7 +729,7 @@ struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeNoFreeAttrInfo> X5("enzyme_nofree",
+static ParsedAttrInfoRegistry::Add<EnzymeNoFreeAttrInfo> X6("enzyme_nofree",
                                                             "");
 
 struct EnzymeSparseAccumulateAttrInfo : public ParsedAttrInfo {
