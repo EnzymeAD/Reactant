@@ -102,6 +102,10 @@ llvm::cl::opt<std::string>
     ReactantBackend("reactant-backend", cl::init("cuda"), cl::Hidden,
            cl::desc("Default backend for reactant"));
 
+llvm::cl::opt<std::string>
+    DeviceLibraries("reactant-device-lib", cl::Hidden, cl::init(""),
+                    cl::desc("Library to link during device compilation"));
+
 namespace {
 
 constexpr char cudaLaunchSymbolName[] = "cudaLaunchKernel";
@@ -528,12 +532,15 @@ public:
     if (!sym) {
       llvm::errs() << " could not find sym\n";
     }
-    auto runLLVMToMLIRRoundTrip = (std::string(*)(std::string, std::string, std::string))sym;
+    auto runLLVMToMLIRRoundTrip =
+        (std::string(*)(std::string, std::string, std::string, std::string))sym;
     if (runLLVMToMLIRRoundTrip) {
       std::string MStr;
       llvm::raw_string_ostream ss(MStr);
       ss << M;
-      auto newMod = runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue());
+      auto newMod =
+          runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
+                                 DeviceLibraries.getValue());
       M.dropAllReferences();
 
       M.getGlobalList().clear();
