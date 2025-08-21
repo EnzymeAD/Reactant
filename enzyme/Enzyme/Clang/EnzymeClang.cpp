@@ -89,7 +89,9 @@ struct Visitor : public RecursiveASTVisitor<Visitor> {
   }
 };
 
-extern "C" void registerReactant(llvm::PassBuilder &PB, std::vector<std::string> gpubins, std::string outfile);
+extern "C" void registerReactant(llvm::PassBuilder &PB,
+                                 std::vector<std::string> gpubins,
+                                 std::string outfile);
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file);
 
@@ -105,9 +107,8 @@ public:
     auto PluginName = "ClangEnzyme-" + std::to_string(LLVM_VERSION_MAJOR);
     //bool contains = false;
 
-
     if (StringRef(ReactantBackend.getValue()).starts_with("xla")) {
-      llvm::errs() <<" note: you need to add -lReactantExtra\n";
+      llvm::errs() << " note: you need to add -lReactantExtra\n";
     }
     std::string inFile;
     for (auto in : CI.getFrontendOpts().Inputs) {
@@ -129,10 +130,10 @@ public:
 	    gpubins.push_back(inFile);
 	  //gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
 	}
-	  std::string file = CI.getFrontendOpts().OutputFile;
-      CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
-	  registerReactant(PB, gpubins, file);
-	});
+        std::string file = CI.getFrontendOpts().OutputFile;
+        CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
+          registerReactant(PB, gpubins, file);
+        });
     }
 
     CI.getPreprocessorOpts().Includes.push_back("/enzyme/enzyme/version");
