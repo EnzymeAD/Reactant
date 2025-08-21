@@ -88,6 +88,8 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
+#include "PreserveNVVM.h"
+
 using namespace llvm;
 #ifdef DEBUG_TYPE
 #undef DEBUG_TYPE
@@ -671,6 +673,17 @@ AnalysisKey ExporterNewPM::Key;
 #include "llvm/Passes/PassBuilder.h"
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
+
+  auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+  };
+
+  // We should register at vectorizer start for consistency, however,
+  // that requires a functionpass, and we have a modulepass.
+  // PB.registerVectorizerStartEPCallback(loadPass);
+  PB.registerPipelineStartEPCallback(loadNVVM);
+  PB.registerFullLinkTimeOptimizationEarlyEPCallback(loadNVVM);
+
 #if LLVM_VERSION_MAJOR >= 20
   auto loadPass =
       [=](ModulePassManager &MPM, OptimizationLevel Level, ThinOrFullLTOPhase)
