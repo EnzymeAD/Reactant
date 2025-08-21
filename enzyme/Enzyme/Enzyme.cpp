@@ -88,6 +88,8 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
+#include "PreserveNVVM.h"
+
 using namespace llvm;
 #ifdef DEBUG_TYPE
 #undef DEBUG_TYPE
@@ -100,7 +102,7 @@ llvm::cl::opt<std::string>
 
 llvm::cl::opt<std::string>
     ReactantBackend("reactant-backend", cl::init("cuda"), cl::Hidden,
-           cl::desc("Default backend for reactant"));
+                    cl::desc("Default backend for reactant"));
 
 llvm::cl::opt<std::string>
     DeviceLibraries("reactant-device-lib", cl::Hidden, cl::init(""),
@@ -149,14 +151,16 @@ void fixup(Module &M) {
         BlockDim2, SharedMemSize, StreamPtr,
     };
     auto StubFunc = cast<Function>(CI->getArgOperand(0));
-    
+
     LLVM_DEBUG(dbgs() << "StubFunc " << *StubFunc << "\n");
     Args.push_back(ArgPtr);
 
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase1", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+    auto MlirLaunchFunc = M.getOrInsertFunction(
+        "__mlir_cuda_caller_phase1",
+        FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     CoercedKernels.insert(Builder.CreateCall(MlirLaunchFunc, Args));
     if (auto II = dyn_cast<InvokeInst>(CI)) {
@@ -233,7 +237,8 @@ void fixup(Module &M) {
       KernelLaunch = dyn_cast<CallInst>(It);
     } while (!It->isTerminator() &&
              !(KernelLaunch && KernelLaunch->getCalledFunction() &&
-               KernelLaunch->getCalledFunction()->getName() == "__mlir_cuda_caller_phase1"));
+               KernelLaunch->getCalledFunction()->getName() ==
+                   "__mlir_cuda_caller_phase1"));
 
     assert(!It->isTerminator());
 
@@ -285,7 +290,9 @@ void fixup(Module &M) {
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase2", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+    auto MlirLaunchFunc = M.getOrInsertFunction(
+        "__mlir_cuda_caller_phase2",
+        FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     Builder.CreateCall(MlirLaunchFunc, Args);
     CI->eraseFromParent();
@@ -296,7 +303,8 @@ class ReactantBase {
 public:
   std::vector<std::string> gpubins;
   std::string outfile;
-  ReactantBase(const std::vector<std::string> &gpubins, std::string outfile) : gpubins(gpubins), outfile(outfile) {}
+  ReactantBase(const std::vector<std::string> &gpubins, std::string outfile)
+      : gpubins(gpubins), outfile(outfile) {}
 
   bool run(Module &M) {
     bool changed = true;
@@ -425,39 +433,41 @@ public:
       llvm::errs() << "post link: " << M << "\n";
 
     if (auto F = M.getFunction("__mlir_cuda_caller_phase2")) {
-        for (auto U : make_early_inc_range(F->users())) {
-         auto CI = cast<CallInst>(U);
-         SmallVector<Value*> args;
-	 for (auto &arg : CI->args()) {
-	   args.push_back(arg.get());
-	 }
-	 auto F = cast<Function>(args[0]);
-	 auto ptr = args.pop_back_val();
-         IRBuilder<> B(CI);
-	 
-	 auto ptrty = PointerType::getUnqual(F->getContext());
-	 for (size_t i=0; i<F->getFunctionType()->getNumParams(); i++) {
-	   auto gep = B.CreateConstInBoundsGEP1_32(ptrty, ptr, i);
-	   auto ld = B.CreateLoad(ptrty, gep);
-	   if (auto T = F->getParamByValType(i)) {
-	     (void)T;
-	     args.push_back(ld);
-	   } else {
-	     auto ld2 = B.CreateLoad(F->getFunctionType()->getParamType(i), ld);
-	     args.push_back(ld2);
-	   }
-	 }
-
-	 auto MlirLaunchFunc = M.getOrInsertFunction("__mlir_cuda_caller_phase3", FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
-
-         B.CreateCall(MlirLaunchFunc, args);
-         CI->eraseFromParent();
+      for (auto U : make_early_inc_range(F->users())) {
+        auto CI = cast<CallInst>(U);
+        SmallVector<Value *> args;
+        for (auto &arg : CI->args()) {
+          args.push_back(arg.get());
         }
+        auto F = cast<Function>(args[0]);
+        auto ptr = args.pop_back_val();
+        IRBuilder<> B(CI);
+
+        auto ptrty = PointerType::getUnqual(F->getContext());
+        for (size_t i = 0; i < F->getFunctionType()->getNumParams(); i++) {
+          auto gep = B.CreateConstInBoundsGEP1_32(ptrty, ptr, i);
+          auto ld = B.CreateLoad(ptrty, gep);
+          if (auto T = F->getParamByValType(i)) {
+            (void)T;
+            args.push_back(ld);
+          } else {
+            auto ld2 = B.CreateLoad(F->getFunctionType()->getParamType(i), ld);
+            args.push_back(ld2);
+          }
+        }
+
+        auto MlirLaunchFunc = M.getOrInsertFunction(
+            "__mlir_cuda_caller_phase3",
+            FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+
+        B.CreateCall(MlirLaunchFunc, args);
+        CI->eraseFromParent();
+      }
     }
 
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << "post link2: " << M << "\n";
-    
+
     fixup(M);
     for (auto todel : {"__cuda_register_globals", "__cuda_module_ctor",
                        "__cuda_module_dtor"}) {
@@ -673,6 +683,17 @@ AnalysisKey ExporterNewPM::Key;
 #include "llvm/Passes/PassBuilder.h"
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
+
+  auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+  };
+
+  // We should register at vectorizer start for consistency, however,
+  // that requires a functionpass, and we have a modulepass.
+  // PB.registerVectorizerStartEPCallback(loadPass);
+  PB.registerPipelineStartEPCallback(loadNVVM);
+  PB.registerFullLinkTimeOptimizationEarlyEPCallback(loadNVVM);
+
 #if LLVM_VERSION_MAJOR >= 20
   auto loadPass =
       [=](ModulePassManager &MPM, OptimizationLevel Level, ThinOrFullLTOPhase)
@@ -698,7 +719,8 @@ extern "C" void registerReactantAndPassPipeline(llvm::PassBuilder &PB,
                                                 bool augment = false) {}
 
 extern "C" void registerReactant(llvm::PassBuilder &PB,
-                                 std::vector<std::string> gpubinaries, std::string outfile) {
+                                 std::vector<std::string> gpubinaries,
+                                 std::string outfile) {
 
   llvm::errs() << " registering reactant\n";
 #if LLVM_VERSION_MAJOR >= 20
