@@ -130,6 +130,66 @@ void fixup(Module &M) {
 
   if (getenv("ENZYME_CLANG_DUMP_BEFORE_FIXUP"))
     llvm::errs() << "BEFORE FIXUP:\n" << M << "\n";
+  
+  auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
+  if (!LaunchKernelFunc)
+    return;
+
+  SmallPtrSet<Function *, 8> CoercedKernels;
+  for (CallBase *CI : gatherCallers(LaunchKernelFunc)) {
+    IRBuilder<> Builder(CI);
+    auto GridDim1 = CI->getArgOperand(1);
+    auto GridDim2 = CI->getArgOperand(2);
+    auto BlockDim1 = CI->getArgOperand(3);
+    auto BlockDim2 = CI->getArgOperand(4);
+    auto ArgPtr = CI->getArgOperand(5);
+    auto SharedMemSize = CI->getArgOperand(6);
+    auto StreamPtr = CI->getArgOperand(7);
+    
+    auto StubFunc = cast<Function>(CI->getArgOperand(0));
+
+    auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
+    
+    auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
+    auto GridDimY = Builder.CreateLShr(
+        GridDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
+    GridDimY = Builder.CreateTrunc(GridDimY, Builder.getInt32Ty());
+    auto GridDimZ = GridDim2;
+    auto BlockDimX = Builder.CreateTrunc(BlockDim1, Builder.getInt32Ty());
+    auto BlockDimY = Builder.CreateLShr(
+        BlockDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
+    BlockDimY = Builder.CreateTrunc(BlockDimY, Builder.getInt32Ty());
+    auto BlockDimZ = BlockDim2;
+    
+    Value * Args[] = {
+        NewFn.getCallee(),   GridDimX,  GridDimY,      GridDimZ,  BlockDimX,
+        BlockDimY, BlockDimZ, SharedMemSize, StreamPtr,  ArgPtr
+    };
+    
+    SmallVector<Type *> ArgTypes;
+    for (Value *V : Args)
+      ArgTypes.push_back(V->getType());
+    auto MlirLaunchFunc = M.getOrInsertFunction(
+        "__mlir_cuda_caller_phase2",
+        FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+
+    Builder.CreateCall(MlirLaunchFunc, Args);
+    CoercedKernels.insert(StubFunc);
+    if (auto II = dyn_cast<InvokeInst>(CI)) {
+      Builder.CreateBr(II->getNormalDest());
+      II->getUnwindDest()->removePredecessor(II->getParent());
+    }
+    CI->eraseFromParent();
+  }
+
+  for (auto StubFunc : CoercedKernels) {
+    for (CallBase *CI : gatherCallers(StubFunc)) {
+       InlineFunctionInfo IFI;
+          InlineResult Res =
+              InlineFunction(*CI, IFI, /*MergeAttributes=*/false);
+          assert(Res.isSuccess());
+    }
+  }
 
   DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
@@ -187,55 +247,6 @@ void fixup(Module &M) {
   }
   }
 
-  auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
-  if (!LaunchKernelFunc)
-    return;
-
-  SmallPtrSet<CallBase *, 8> CoercedKernels;
-  for (CallBase *CI : gatherCallers(LaunchKernelFunc)) {
-    IRBuilder<> Builder(CI);
-    auto GridDim1 = CI->getArgOperand(1);
-    auto GridDim2 = CI->getArgOperand(2);
-    auto BlockDim1 = CI->getArgOperand(3);
-    auto BlockDim2 = CI->getArgOperand(4);
-    auto ArgPtr = CI->getArgOperand(5);
-    auto SharedMemSize = CI->getArgOperand(6);
-    auto StreamPtr = CI->getArgOperand(7);
-    
-    auto StubFunc = cast<Function>(CI->getArgOperand(0));
-
-    auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
-    
-    auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
-    auto GridDimY = Builder.CreateLShr(
-        GridDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
-    GridDimY = Builder.CreateTrunc(GridDimY, Builder.getInt32Ty());
-    auto GridDimZ = GridDim2;
-    auto BlockDimX = Builder.CreateTrunc(BlockDim1, Builder.getInt32Ty());
-    auto BlockDimY = Builder.CreateLShr(
-        BlockDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
-    BlockDimY = Builder.CreateTrunc(BlockDimY, Builder.getInt32Ty());
-    auto BlockDimZ = BlockDim2;
-    
-    Value * Args[] = {
-        NewFn.getCallee(),   GridDimX,  GridDimY,      GridDimZ,  BlockDimX,
-        BlockDimY, BlockDimZ, SharedMemSize, StreamPtr,  ArgPtr
-    };
-    
-    SmallVector<Type *> ArgTypes;
-    for (Value *V : Args)
-      ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = M.getOrInsertFunction(
-        "__mlir_cuda_caller_phase2",
-        FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
-
-    Builder.CreateCall(MlirLaunchFunc, Args);
-    if (auto II = dyn_cast<InvokeInst>(CI)) {
-      Builder.CreateBr(II->getNormalDest());
-      II->getUnwindDest()->removePredecessor(II->getParent());
-    }
-    CI->eraseFromParent();
-  }
 }
 
 class ReactantBase {
@@ -350,6 +361,7 @@ public:
                 MF->setName("reactant$" + F22->getName());
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
+                F22->setLinkage(Function::LinkageTypes::InternalLinkage);
                 toInternalize.push_back(MF->getName().str());
                 CI->eraseFromParent();
               }
