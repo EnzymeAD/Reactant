@@ -131,70 +131,8 @@ void fixup(Module &M) {
   if (getenv("ENZYME_CLANG_DUMP_BEFORE_FIXUP"))
     llvm::errs() << "BEFORE FIXUP:\n" << M << "\n";
 
-  auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
-  if (!LaunchKernelFunc)
-    return;
-
-  SmallPtrSet<CallBase *, 8> CoercedKernels;
-  for (CallBase *CI : gatherCallers(LaunchKernelFunc)) {
-    IRBuilder<> Builder(CI);
-    auto FuncPtr = CI->getArgOperand(0);
-    auto GridDim1 = CI->getArgOperand(1);
-    auto GridDim2 = CI->getArgOperand(2);
-    auto BlockDim1 = CI->getArgOperand(3);
-    auto BlockDim2 = CI->getArgOperand(4);
-    auto ArgPtr = CI->getArgOperand(5);
-    auto SharedMemSize = CI->getArgOperand(6);
-    auto StreamPtr = CI->getArgOperand(7);
-    SmallVector<Value *> Args = {
-        FuncPtr,   GridDim1,      GridDim2,  BlockDim1,
-        BlockDim2, SharedMemSize, StreamPtr,
-    };
-    auto StubFunc = cast<Function>(CI->getArgOperand(0));
-
-    LLVM_DEBUG(dbgs() << "StubFunc " << *StubFunc << "\n");
-    Args.push_back(ArgPtr);
-
-    SmallVector<Type *> ArgTypes;
-    for (Value *V : Args)
-      ArgTypes.push_back(V->getType());
-    auto MlirLaunchFunc = M.getOrInsertFunction(
-        "__mlir_cuda_caller_phase1",
-        FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
-
-    CoercedKernels.insert(Builder.CreateCall(MlirLaunchFunc, Args));
-    if (auto II = dyn_cast<InvokeInst>(CI)) {
-      Builder.CreateBr(II->getNormalDest());
-      II->getUnwindDest()->removePredecessor(II->getParent());
-    }
-    CI->eraseFromParent();
-  }
-
-  SmallVector<Function *> InlinedStubs;
-  for (CallBase *CI : CoercedKernels) {
-    Function *StubFunc = cast<Function>(CI->getArgOperand(0));
-    for (User *callee : StubFunc->users()) {
-      if (auto *CI = dyn_cast<CallBase>(callee)) {
-        if (CI->getCalledFunction() == StubFunc) {
-          InlineFunctionInfo IFI;
-          InlineResult Res =
-              InlineFunction(*CI, IFI, /*MergeAttributes=*/false);
-          assert(Res.isSuccess());
-          InlinedStubs.push_back(StubFunc);
-          continue;
-        }
-      }
-    }
-  }
-  for (Function *F : InlinedStubs) {
-    F->erase(F->begin(), F->end());
-    BasicBlock *BB = BasicBlock::Create(F->getContext(), "entry", F);
-    ReturnInst::Create(F->getContext(), nullptr, BB->begin());
-  }
-
-  CoercedKernels.clear();
   DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
-  auto PushConfigFunc = M.getFunction(cudaPushConfigName);
+  if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
   for (CallBase *CI : gatherCallers(PushConfigFunc)) {
     Function *TheFunc = CI->getFunction();
     IRBuilder<> IRB(&TheFunc->getEntryBlock(),
@@ -213,7 +151,6 @@ void fixup(Module &M) {
           IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "shmem_size"));
       Allocas.push_back(IRB.CreateAlloca(IRB.getPtrTy(), nullptr, "stream"));
       FuncAllocas.insert_or_assign(TheFunc, Allocas);
-      llvm::errs() << " CI: making allocas for  " << *CI << "\n";
     }
     IRB.SetInsertPoint(CI);
     if (CI->arg_size() != Allocas.size()) {
@@ -221,8 +158,12 @@ void fixup(Module &M) {
     }
     for (auto [Arg, Alloca] : llvm::zip_equal(CI->args(), Allocas))
       IRB.CreateStore(Arg, Alloca);
+    CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
+    CI->eraseFromParent();
   }
-  auto PopConfigFunc = M.getFunction(cudaPopConfigName);
+  }
+
+  if (  auto PopConfigFunc = M.getFunction(cudaPopConfigName)) {
   for (CallBase *PopCall : gatherCallers(PopConfigFunc)) {
     Function *TheFunc = PopCall->getFunction();
     auto Allocas = FuncAllocas.lookup(TheFunc);
@@ -230,63 +171,57 @@ void fixup(Module &M) {
       continue;
     }
 
-    CallBase *KernelLaunch = PopCall;
-    Instruction *It = PopCall;
-    do {
-      It = It->getNextNode();
-      KernelLaunch = dyn_cast<CallInst>(It);
-    } while (!It->isTerminator() &&
-             !(KernelLaunch && KernelLaunch->getCalledFunction() &&
-               KernelLaunch->getCalledFunction()->getName() ==
-                   "__mlir_cuda_caller_phase1"));
-
-    assert(!It->isTerminator());
-
+    // ptr nonnull %grid_dim.i, ptr nonnull %block_dim.i, ptr nonnull %shmem_size.i, ptr nonnull %stream.i
     IRBuilder<> IRB(PopCall);
+    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[0]), PopCall->getArgOperand(0));
+    IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[1]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(0), 8));
+    
+    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[2]), PopCall->getArgOperand(1));
+    IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[3]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(1), 8));
+    
+    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[4]), PopCall->getArgOperand(2));
+    IRB.CreateStore(IRB.CreateLoad(IRB.getPtrTy(), Allocas[5]), PopCall->getArgOperand(3));
 
-    for (auto [Arg, Alloca] : llvm::zip(
-             llvm::drop_begin(KernelLaunch->operand_values(), 1), Allocas)) {
-      auto Load = cast<LoadInst>(Arg);
-      LoadInst *NewLoad = IRB.CreateLoad(Arg->getType(), Alloca);
-      Load->replaceAllUsesWith(NewLoad);
-    }
-    CoercedKernels.insert(KernelLaunch);
-    // Replace with success
-    PopCall->replaceAllUsesWith(IRB.getInt32(0));
+    PopCall->replaceAllUsesWith(Constant::getNullValue(PopCall->getType()));
     PopCall->eraseFromParent();
   }
-
-  for (CallBase *PushCall : gatherCallers(PushConfigFunc)) {
-    // Replace with success
-    PushCall->replaceAllUsesWith(
-        ConstantInt::get(IntegerType::get(PushCall->getContext(), 32), 0));
-    PushCall->eraseFromParent();
   }
-  for (CallBase *CI : CoercedKernels) {
+
+  auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
+  if (!LaunchKernelFunc)
+    return;
+
+  SmallPtrSet<CallBase *, 8> CoercedKernels;
+  for (CallBase *CI : gatherCallers(LaunchKernelFunc)) {
     IRBuilder<> Builder(CI);
-    auto FuncPtr = cast<Function>(CI->getArgOperand(0));
     auto GridDim1 = CI->getArgOperand(1);
     auto GridDim2 = CI->getArgOperand(2);
+    auto BlockDim1 = CI->getArgOperand(3);
+    auto BlockDim2 = CI->getArgOperand(4);
+    auto ArgPtr = CI->getArgOperand(5);
+    auto SharedMemSize = CI->getArgOperand(6);
+    auto StreamPtr = CI->getArgOperand(7);
+    
+    auto StubFunc = cast<Function>(CI->getArgOperand(0));
+
+    auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
+    
     auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
     auto GridDimY = Builder.CreateLShr(
         GridDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
     GridDimY = Builder.CreateTrunc(GridDimY, Builder.getInt32Ty());
     auto GridDimZ = GridDim2;
-    auto BlockDim1 = CI->getArgOperand(3);
-    auto BlockDim2 = CI->getArgOperand(4);
     auto BlockDimX = Builder.CreateTrunc(BlockDim1, Builder.getInt32Ty());
     auto BlockDimY = Builder.CreateLShr(
         BlockDim1, ConstantInt::get(Builder.getInt64Ty(), 32));
     BlockDimY = Builder.CreateTrunc(BlockDimY, Builder.getInt32Ty());
     auto BlockDimZ = BlockDim2;
-    auto SharedMemSize = CI->getArgOperand(5);
-    auto StreamPtr = CI->getArgOperand(6);
-    SmallVector<Value *> Args = {
-        FuncPtr,   GridDimX,  GridDimY,      GridDimZ,  BlockDimX,
-        BlockDimY, BlockDimZ, SharedMemSize, StreamPtr,
+    
+    Value * Args[] = {
+        NewFn.getCallee(),   GridDimX,  GridDimY,      GridDimZ,  BlockDimX,
+        BlockDimY, BlockDimZ, SharedMemSize, StreamPtr,  ArgPtr
     };
-    for (unsigned I = 7; I < CI->getNumOperands() - 1; I++)
-      Args.push_back(CI->getArgOperand(I));
+    
     SmallVector<Type *> ArgTypes;
     for (Value *V : Args)
       ArgTypes.push_back(V->getType());
@@ -295,6 +230,10 @@ void fixup(Module &M) {
         FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     Builder.CreateCall(MlirLaunchFunc, Args);
+    if (auto II = dyn_cast<InvokeInst>(CI)) {
+      Builder.CreateBr(II->getNormalDest());
+      II->getUnwindDest()->removePredecessor(II->getParent());
+    }
     CI->eraseFromParent();
   }
 }
@@ -408,7 +347,7 @@ public:
 
             if (nameVal.size())
               if (auto MF = mod2->getFunction(nameVal)) {
-                MF->setName(F22->getName());
+                MF->setName("reactant$" + F22->getName());
                 F22->deleteBody();
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
