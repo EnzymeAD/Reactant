@@ -348,7 +348,6 @@ public:
             if (nameVal.size())
               if (auto MF = mod2->getFunction(nameVal)) {
                 MF->setName("reactant$" + F22->getName());
-                F22->deleteBody();
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
                 toInternalize.push_back(MF->getName().str());
