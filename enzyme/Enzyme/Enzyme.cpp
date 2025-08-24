@@ -507,6 +507,7 @@ public:
       M.getFunctionList().clear();
       M.getAliasList().clear();
       M.getIFuncList().clear();
+      M.getComdatSymbolTable().clear();
 
       llvm::SMDiagnostic Err;
       auto llvmModule = llvm::parseIR(
@@ -519,7 +520,7 @@ public:
       }
       auto handler = M.getContext().getDiagnosticHandler();
       Linker L(M);
-      L.linkInModule(std::move(llvmModule));
+      L.linkInModule(std::move(llvmModule), Linker::Flags::OverrideFromSrc);
       M.getContext().setDiagnosticHandler(std::move(handler));
     }
     M.getContext().setDiscardValueNames(discard);
