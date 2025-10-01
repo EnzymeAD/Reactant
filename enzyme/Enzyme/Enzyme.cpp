@@ -128,9 +128,6 @@ SmallVector<CallBase *> gatherCallers(Function *F) {
 
 void fixup(Module &M) {
 
-  if (getenv("ENZYME_CLANG_DUMP_BEFORE_FIXUP"))
-    llvm::errs() << "BEFORE FIXUP:\n" << M << "\n";
-  
   auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
   if (!LaunchKernelFunc)
     return;
@@ -148,6 +145,8 @@ void fixup(Module &M) {
     
     auto StubFunc = cast<Function>(CI->getArgOperand(0));
 
+    if (StubFunc->getName().starts_with("reactant$"))
+      continue;
     auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
     
     auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
@@ -190,6 +189,34 @@ void fixup(Module &M) {
           assert(Res.isSuccess());
     }
   }
+
+  // Map of runtime function, index of the entry fn
+  std::pair<const char *, int> runtime_fns[] = {
+      {"cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", 1},
+      {"cudaFuncGetAttributes", 1},
+      {"cudaFuncGetName", 1},
+      {"cudaFuncSetAttribute", 0},
+      {"cudaFuncSetCacheConfig", 0},
+  };
+  for (auto &pair : runtime_fns)
+    if (auto occupancy = M.getFunction(pair.first)) {
+      for (CallBase *CI : gatherCallers(occupancy)) {
+        auto StubFunc = dyn_cast<Function>(CI->getArgOperand(pair.second));
+        if (!StubFunc) {
+          llvm::errs() << " cuda runtime function " << pair.first
+                       << " did not have constant argument, had "
+                       << *CI->getArgOperand(pair.second)
+                       << " errors may occur\n";
+          continue;
+        }
+        if (StubFunc->getName().starts_with("reactant$"))
+          continue;
+        auto NewFn = M.getOrInsertFunction(
+            ("reactant$" + StubFunc->getName()).str(),
+            StubFunc->getFunctionType(), StubFunc->getAttributes());
+        CI->setArgOperand(1, NewFn.getCallee());
+      }
+    }
 
   DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
@@ -246,7 +273,6 @@ void fixup(Module &M) {
     PopCall->eraseFromParent();
   }
   }
-
 }
 
 class ReactantBase {
