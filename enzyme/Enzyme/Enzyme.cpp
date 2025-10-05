@@ -527,6 +527,11 @@ public:
       auto newMod =
           runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
                                  DeviceLibraries.getValue());
+      if (newMod.empty()) {
+        M.getContext().diagnose(DiagnosticInfoUnsupported(
+            *M.begin(), "Reactant: failed to run mlir passes"));
+        return changed;
+      }
       M.dropAllReferences();
 
       M.getGlobalList().clear();
