@@ -88,6 +88,8 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
+#include "llvm/Analysis/PostDominators.h"
+
 #include "PreserveNVVM.h"
 
 using namespace llvm;
@@ -322,7 +324,7 @@ void fixup(Module &M) {
   // Per each function, this alloca list repreesents the corrseponding args to cuda-mem2reg within the function boundary.
   DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
 
-  DenseMap<Function *, SmallVector<CallBase*>> Pushes;
+  DenseMap<Function *, SetVector<CallBase*>> Pushes;
 
   // Find all calls to push, add to the alloca, and remove the original push.
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
@@ -352,7 +354,7 @@ void fixup(Module &M) {
       for (auto [Arg, Alloca] : llvm::zip_equal(CI->args(), Allocas))
         IRB.CreateStore(Arg, Alloca);
       CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
-      Pushes[TheFunc].push_back(CI);
+      Pushes[TheFunc].insert(CI);
     }
   }
 
@@ -362,11 +364,11 @@ void fixup(Module &M) {
     PassBuilder PB;
     PB.registerFunctionAnalyses(FAM);
 
-    DenseMap<Function *, SmallVector<CallBase*>> Pops;
+    DenseMap<Function *, SetVector<CallBase*>> Pops;
 
     for (CallBase *PopCall : gatherCallers(PopConfigFunc)) {
       Function *TheFunc = PopCall->getFunction();
-      Pops[TheFunc].push_back(PopCall);
+      Pops[TheFunc].insert(PopCall);
     }
 
     SmallVector<Function*, 1> todo;
@@ -378,7 +380,7 @@ void fixup(Module &M) {
 
     while (!todo.empty()) {
       auto TheFunc = todo.pop_back_val();
-      auto &PopList = Pops.lookup(TheFunc);
+      const auto &PopList = Pops.lookup(TheFunc);
       for (auto PopCall : PopList) {
         auto Allocas = FuncAllocas.lookup(TheFunc);
         if (Allocas.empty()) {
@@ -390,8 +392,8 @@ void fixup(Module &M) {
 
         // find corresponding pop for push
         CallBase* PushCall = nullptr;
-        auto &PushList = PushList;
-        for (auto push : Pushes.lookup(TheFunc)) {
+        const auto &PushList = Pushes.lookup(TheFunc);
+        for (auto push : PushList) {
           // Check if push dominates the pop, and the pop dominates the push, if so we delete
           // If there is an earlier push we found that has this property, pick the latter of the two.
 
@@ -433,16 +435,17 @@ void fixup(Module &M) {
         IRB.CreateStore(IRB.CreateLoad(IRB.getPtrTy(), Allocas[5]), PopCall->getArgOperand(3));
 
         PopCall->replaceAllUsesWith(Constant::getNullValue(PopCall->getType()));
+
+        if (PushList.size() > 1 && PopList.size() > 1) {
+          todo.push_back(TheFunc);
+        }
         
-        PushList.erase(PushCall);
-        PopList.erase(PopCall);
+	Pushes[TheFunc].remove(PushCall);
+	Pops[TheFunc].remove(PopCall);
         
         PopCall->eraseFromParent();
         PushCall->eraseFromParent();
-
-        if (PushList.size() && PopList.size()) {
-          todo.push_back(TheFunc);
-        }
+	break;
       }
     }
   }
