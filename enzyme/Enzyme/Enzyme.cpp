@@ -88,6 +88,11 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
+
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Analysis/PostDominators.h"
+
 #include "PreserveNVVM.h"
 
 using namespace llvm;
@@ -132,7 +137,35 @@ void fixup(Module &M) {
   if (!LaunchKernelFunc)
     return;
 
-  SmallPtrSet<Function *, 8> CoercedKernels;
+  SmallPtrSet<Function *, 8> HostStubFuncs;
+
+  // For all calls to cudaLaunchKernel, find the stub function, and replace
+  // the stub function with a empty declaration of reactant$stubname, which will now
+  // correspond to the actual device code. This is because clang for cuda will emit two unrelated functions
+  // with the same name, one on device (containing device code) and one on host, containing cudaPop and the call to
+  // the kernel launch. As we do not want to confuse one and the other, we explicitly separate them.
+  // Furthermore, we replace cudaLaunchKernel with a call to __mlir_cuda_caller_phase2 and extract
+  // the corresponding launch sizes (block/thread dim) as separate arguments, as parsed from cudaLaunchKernel.
+  // The list of host-side stub functions used here are placed within `HostStubFuncs`.
+  // Example code before:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     cudaLaunch(@stubFunc, x | y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaPush(x | y, z, ...);
+  //     stubFunc();
+  // }
+  // 
+  // Example code before:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaPush(x | y, z, ...);
+  //     stubFunc();
+  // }
   for (CallBase *CI : gatherCallers(LaunchKernelFunc)) {
     IRBuilder<> Builder(CI);
     auto GridDim1 = CI->getArgOperand(1);
@@ -147,6 +180,9 @@ void fixup(Module &M) {
 
     if (StubFunc->getName().starts_with("reactant$"))
       continue;
+
+    // This is a declaration of the new device-function we will use. It is empty because it will be replaced by the
+    // device function of the corresponding name, during subsequent linking
     auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
     
     auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
@@ -173,7 +209,7 @@ void fixup(Module &M) {
         FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
     Builder.CreateCall(MlirLaunchFunc, Args);
-    CoercedKernels.insert(StubFunc);
+    HostStubFuncs.insert(StubFunc);
     if (auto II = dyn_cast<InvokeInst>(CI)) {
       Builder.CreateBr(II->getNormalDest());
       II->getUnwindDest()->removePredecessor(II->getParent());
@@ -181,7 +217,45 @@ void fixup(Module &M) {
     CI->eraseFromParent();
   }
 
-  for (auto StubFunc : CoercedKernels) {
+  // For all callers of the host-side stub function, attempt to inline where possible.
+  // 
+  // Example code before:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaPush(x | y, z, ...);
+  //     stubFunc();
+  // }
+  //
+  // Example code after:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaPush(x | y, z, ...);
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  // }
+  //
+  // Note that stubFunc is still left around. Also note that, inlining may not succeed, if,
+  // for example, stubFunc is captured and called indirectly, like as follows
+  //
+  // Example indirect code before:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void indirect(void* tocall) {
+  //     cudaPush(x | y, z, ...);
+  //     tocall();
+  //  }
+  //  void main() {
+  //     indirect(stubFunc);
+  // }
+  for (auto StubFunc : HostStubFuncs) {
     for (CallBase *CI : gatherCallers(StubFunc)) {
        InlineFunctionInfo IFI;
           InlineResult Res =
@@ -198,6 +272,32 @@ void fixup(Module &M) {
       {"cudaFuncSetAttribute", 0},
       {"cudaFuncSetCacheConfig", 0},
   };
+
+
+  // For all callers of the host-side stub function, that really should have
+  // called the device version of the stub function, replace known cuda runtime
+  // calls to the host stub function with the new device stub function.
+  // 
+  // Currently we just replace uses known from the runtime_fns map above. This
+  // is not exhaustive, but required for code calling it.
+  //
+  // Example code before:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaFuncSetCacheConfig(@stubFunc, ...);
+  // }
+  //
+  // Example code after:
+  //  void stubFunc() {
+  //     cudaPop();
+  //     __mlir_cuda_caller_phase2(@reactant$stubFunc, x, y, z, ...);
+  //  }
+  //  void main() {
+  //     cudaFuncSetCacheConfig(@reactant$stubFunc, ...);
+  //  }
   for (auto &pair : runtime_fns)
     if (auto occupancy = M.getFunction(pair.first)) {
       for (CallBase *CI : gatherCallers(occupancy)) {
@@ -218,60 +318,171 @@ void fixup(Module &M) {
       }
     }
 
-  DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
+  // We now retain cudaPush and cudaPop. These functions no longer have any meaning
+  // for the actual kernel call itself, since we have already parsed the cuda launch boundaries
+  // from cudaLaunchFunc earlier. However, these functions still represent a stack of data transfers.
+  // We do an extremely primitive form of mem2reg for the push/pop so we can actually see through
+  // the invocation and figure out which arguments map where.
+  
+  DenseMap<Function *, SetVector<CallBase*>> Pushes;
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
-  for (CallBase *CI : gatherCallers(PushConfigFunc)) {
-    Function *TheFunc = CI->getFunction();
-    IRBuilder<> IRB(&TheFunc->getEntryBlock(),
-                    TheFunc->getEntryBlock().getFirstNonPHIOrDbgOrAlloca());
-    auto Allocas = FuncAllocas.lookup(TheFunc);
-    if (Allocas.empty()) {
-      Allocas.push_back(
-          IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "griddim64"));
-      Allocas.push_back(
-          IRB.CreateAlloca(IRB.getInt32Ty(), nullptr, "griddim32"));
-      Allocas.push_back(
-          IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "blockdim64"));
-      Allocas.push_back(
-          IRB.CreateAlloca(IRB.getInt32Ty(), nullptr, "blockdim32"));
-      Allocas.push_back(
-          IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "shmem_size"));
-      Allocas.push_back(IRB.CreateAlloca(IRB.getPtrTy(), nullptr, "stream"));
-      FuncAllocas.insert_or_assign(TheFunc, Allocas);
+    for (CallBase *CI : gatherCallers(PushConfigFunc)) {
+      Function *TheFunc = CI->getFunction();
+      CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
+      Pushes[TheFunc].insert(CI);
     }
-    IRB.SetInsertPoint(CI);
-    if (CI->arg_size() != Allocas.size()) {
-      llvm::errs() << " size mismatch on: " << *CI << "\n";
-    }
-    for (auto [Arg, Alloca] : llvm::zip_equal(CI->args(), Allocas))
-      IRB.CreateStore(Arg, Alloca);
-    CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
-    CI->eraseFromParent();
+  }
+    
+    PassBuilder PB;
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+
+  for (auto &pair : Pushes) {
+    auto NewF = pair.first;
+	  {
+    auto PA = InstCombinePass().run(*NewF, FAM);
+    FAM.invalidate(*NewF, PA);
+  }
+
+  {
+    SimplifyCFGOptions scfgo;
+    auto PA = SimplifyCFGPass(scfgo).run(*NewF, FAM);
+    FAM.invalidate(*NewF, PA);
   }
   }
 
+  Pushes.clear();
+
+  // Per each function, this alloca list repreesents the corrseponding args to cuda-mem2reg within the function boundary.
+  DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
+
+  // Find all calls to push, add to the alloca, and remove the original push.
+  if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
+    for (CallBase *CI : gatherCallers(PushConfigFunc)) {
+      Function *TheFunc = CI->getFunction();
+      IRBuilder<> IRB(&TheFunc->getEntryBlock(),
+                      TheFunc->getEntryBlock().getFirstNonPHIOrDbgOrAlloca());
+      auto Allocas = FuncAllocas.lookup(TheFunc);
+      if (Allocas.empty()) {
+        Allocas.push_back(
+            IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "griddim64"));
+        Allocas.push_back(
+            IRB.CreateAlloca(IRB.getInt32Ty(), nullptr, "griddim32"));
+        Allocas.push_back(
+            IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "blockdim64"));
+        Allocas.push_back(
+            IRB.CreateAlloca(IRB.getInt32Ty(), nullptr, "blockdim32"));
+        Allocas.push_back(
+            IRB.CreateAlloca(IRB.getInt64Ty(), nullptr, "shmem_size"));
+        Allocas.push_back(IRB.CreateAlloca(IRB.getPtrTy(), nullptr, "stream"));
+        FuncAllocas.insert_or_assign(TheFunc, Allocas);
+      }
+      IRB.SetInsertPoint(CI);
+      if (CI->arg_size() != Allocas.size()) {
+        llvm::errs() << " size mismatch on: " << *CI << "\n";
+      }
+      for (auto [Arg, Alloca] : llvm::zip_equal(CI->args(), Allocas))
+        IRB.CreateStore(Arg, Alloca);
+      CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
+      Pushes[TheFunc].insert(CI);
+    }
+  }
+
+  // Find all calls to pop, lookup the alloca (if available), and remove the original pop.
   if (  auto PopConfigFunc = M.getFunction(cudaPopConfigName)) {
-  for (CallBase *PopCall : gatherCallers(PopConfigFunc)) {
-    Function *TheFunc = PopCall->getFunction();
-    auto Allocas = FuncAllocas.lookup(TheFunc);
-    if (Allocas.empty()) {
-      continue;
+
+    DenseMap<Function *, SetVector<CallBase*>> Pops;
+
+    for (CallBase *PopCall : gatherCallers(PopConfigFunc)) {
+      Function *TheFunc = PopCall->getFunction();
+      Pops[TheFunc].insert(PopCall);
     }
 
-    // ptr nonnull %grid_dim.i, ptr nonnull %block_dim.i, ptr nonnull %shmem_size.i, ptr nonnull %stream.i
-    IRBuilder<> IRB(PopCall);
-    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[0]), PopCall->getArgOperand(0));
-    IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[1]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(0), 8));
-    
-    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[2]), PopCall->getArgOperand(1));
-    IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[3]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(1), 8));
-    
-    IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[4]), PopCall->getArgOperand(2));
-    IRB.CreateStore(IRB.CreateLoad(IRB.getPtrTy(), Allocas[5]), PopCall->getArgOperand(3));
+    SmallVector<Function*, 1> todo;
+    for (auto &pair : Pops) {
+      if (Pushes.contains(pair.first)) {
+        todo.push_back(pair.first);
+      }
+    }
 
-    PopCall->replaceAllUsesWith(Constant::getNullValue(PopCall->getType()));
-    PopCall->eraseFromParent();
-  }
+    while (!todo.empty()) {
+      auto TheFunc = todo.pop_back_val();
+      const auto &PopList = Pops.lookup(TheFunc);
+      for (auto PopCall : PopList) {
+        auto Allocas = FuncAllocas.lookup(TheFunc);
+        if (Allocas.empty()) {
+          continue;
+        }
+
+        llvm::DominatorTree &DT = FAM.getResult<DominatorTreeAnalysis>(*TheFunc);
+        llvm::PostDominatorTree &PDT = FAM.getResult<PostDominatorTreeAnalysis>(*TheFunc);
+
+        // find corresponding pop for push
+        CallBase* PushCall = nullptr;
+        const auto &PushList = Pushes.lookup(TheFunc);
+        for (auto push : PushList) {
+          // Check if push dominates the pop, and the pop dominates the push, if so we delete
+          // If there is an earlier push we found that has this property, pick the latter of the two.
+
+          if (!DT.dominates(push, PopCall)) {
+            continue;
+          }
+
+          if (!PDT.dominates(PopCall, push)) {
+            continue;
+          }
+
+          if (!PushCall) {
+            PushCall = push;
+          } else {
+            if (DT.dominates(PushCall, push)) {
+              PushCall = push;
+            } else if (DT.dominates(push, PushCall)) {
+              continue;
+            } else {
+              PushCall = nullptr;
+              break;
+            }
+          }
+        }
+
+        if (!PushCall) {
+          continue;
+        }
+
+        // ptr nonnull %grid_dim.i, ptr nonnull %block_dim.i, ptr nonnull %shmem_size.i, ptr nonnull %stream.i
+        IRBuilder<> IRB(PopCall);
+        IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[0]), PopCall->getArgOperand(0));
+        IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[1]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(0), 8));
+        
+        IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[2]), PopCall->getArgOperand(1));
+        IRB.CreateStore(IRB.CreateLoad(IRB.getInt32Ty(), Allocas[3]), IRB.CreateConstInBoundsGEP1_64(IRB.getInt8Ty(), PopCall->getArgOperand(1), 8));
+        
+        IRB.CreateStore(IRB.CreateLoad(IRB.getInt64Ty(), Allocas[4]), PopCall->getArgOperand(2));
+        IRB.CreateStore(IRB.CreateLoad(IRB.getPtrTy(), Allocas[5]), PopCall->getArgOperand(3));
+
+        PopCall->replaceAllUsesWith(Constant::getNullValue(PopCall->getType()));
+
+        if (PushList.size() > 1 && PopList.size() > 1) {
+          todo.push_back(TheFunc);
+        }
+        
+	Pushes[TheFunc].remove(PushCall);
+	Pops[TheFunc].remove(PopCall);
+        
+        PopCall->eraseFromParent();
+        PushCall->eraseFromParent();
+	break;
+      }
+    }
   }
 }
 
