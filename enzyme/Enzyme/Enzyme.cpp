@@ -88,6 +88,9 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
+
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Analysis/PostDominators.h"
 
 #include "PreserveNVVM.h"
@@ -320,11 +323,46 @@ void fixup(Module &M) {
   // from cudaLaunchFunc earlier. However, these functions still represent a stack of data transfers.
   // We do an extremely primitive form of mem2reg for the push/pop so we can actually see through
   // the invocation and figure out which arguments map where.
+  
+  DenseMap<Function *, SetVector<CallBase*>> Pushes;
+  if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
+    for (CallBase *CI : gatherCallers(PushConfigFunc)) {
+      Function *TheFunc = CI->getFunction();
+      CI->replaceAllUsesWith(Constant::getNullValue(CI->getType()));
+      Pushes[TheFunc].insert(CI);
+    }
+  }
+    
+    PassBuilder PB;
+    LoopAnalysisManager LAM;
+    FunctionAnalysisManager FAM;
+    CGSCCAnalysisManager CGAM;
+    ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+
+  for (auto &pair : Pushes) {
+    auto NewF = pair.first;
+	  {
+    auto PA = InstCombinePass().run(*NewF, FAM);
+    FAM.invalidate(*NewF, PA);
+  }
+
+  {
+    SimplifyCFGOptions scfgo;
+    auto PA = SimplifyCFGPass(scfgo).run(*NewF, FAM);
+    FAM.invalidate(*NewF, PA);
+  }
+  }
+
+  Pushes.clear();
 
   // Per each function, this alloca list repreesents the corrseponding args to cuda-mem2reg within the function boundary.
   DenseMap<Function *, SmallVector<AllocaInst *, 6>> FuncAllocas;
-
-  DenseMap<Function *, SetVector<CallBase*>> Pushes;
 
   // Find all calls to push, add to the alloca, and remove the original push.
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
@@ -360,9 +398,6 @@ void fixup(Module &M) {
 
   // Find all calls to pop, lookup the alloca (if available), and remove the original pop.
   if (  auto PopConfigFunc = M.getFunction(cudaPopConfigName)) {
-    llvm::FunctionAnalysisManager FAM;
-    PassBuilder PB;
-    PB.registerFunctionAnalyses(FAM);
 
     DenseMap<Function *, SetVector<CallBase*>> Pops;
 
