@@ -23,6 +23,7 @@
 // the function passed as the first argument.
 //
 //===----------------------------------------------------------------------===//
+#include <llvm/IR/DerivedTypes.h>
 #define private public
 #include "llvm/IR/Module.h"
 #undef private
@@ -271,8 +272,8 @@ void fixup(Module &M) {
       {"cudaFuncGetName", 1},
       {"cudaFuncSetAttribute", 0},
       {"cudaFuncSetCacheConfig", 0},
+      {"cudaLaunchKernelExC", 1},
   };
-
 
   // For all callers of the host-side stub function, that really should have
   // called the device version of the stub function, replace known cuda runtime
@@ -298,15 +299,25 @@ void fixup(Module &M) {
   //  void main() {
   //     cudaFuncSetCacheConfig(@reactant$stubFunc, ...);
   //  }
-  for (auto &pair : runtime_fns)
-    if (auto occupancy = M.getFunction(pair.first)) {
-      for (CallBase *CI : gatherCallers(occupancy)) {
+  IRBuilder<> Builder(M.getContext());
+  const char *GetDeviceFromHostFuncName = "__reactant$get_device_from_host";
+  FunctionCallee GetDeviceFromHost = M.getOrInsertFunction(
+      GetDeviceFromHostFuncName,
+      FunctionType::get(Builder.getPtrTy(), {Builder.getPtrTy()},
+                        /*isVarArg=*/false));
+  for (auto &pair : runtime_fns) {
+    if (auto rtFunc = M.getFunction(pair.first)) {
+      for (CallBase *CI : gatherCallers(rtFunc)) {
         auto StubFunc = dyn_cast<Function>(CI->getArgOperand(pair.second));
         if (!StubFunc) {
-          llvm::errs() << " cuda runtime function " << pair.first
-                       << " did not have constant argument, had "
-                       << *CI->getArgOperand(pair.second)
-                       << " errors may occur\n";
+          if (auto Call = dyn_cast<CallInst>(CI->getArgOperand(pair.second));
+              Call && Call->getCalledFunction() &&
+              Call->getCalledFunction()->getName() == GetDeviceFromHostFuncName)
+            continue;
+          Builder.SetInsertPoint(CI);
+          CI->setArgOperand(pair.second,
+                            Builder.CreateCall(GetDeviceFromHost,
+                                               CI->getArgOperand(pair.second)));
           continue;
         }
         if (StubFunc->getName().starts_with("reactant$"))
@@ -314,9 +325,10 @@ void fixup(Module &M) {
         auto NewFn = M.getOrInsertFunction(
             ("reactant$" + StubFunc->getName()).str(),
             StubFunc->getFunctionType(), StubFunc->getAttributes());
-        CI->setArgOperand(1, NewFn.getCallee());
+        CI->setArgOperand(pair.second, NewFn.getCallee());
       }
     }
+  }
 
   // We now retain cudaPush and cudaPop. These functions no longer have any meaning
   // for the actual kernel call itself, since we have already parsed the cuda launch boundaries
