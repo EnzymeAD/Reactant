@@ -34,8 +34,7 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
-
-  build-linux:
+  build:
     name: Reactant ${{ matrix.build }} ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
