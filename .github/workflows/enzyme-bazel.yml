@@ -133,7 +133,6 @@ jobs:
     - name: Set BAZEL_FLAGS
       shell: bash
       run: |
-        set -e
         BAZEL_FLAGS=""
         if [ ${{ runner.os }} == macOS ]; then
            BAZEL_FLAGS="${BAZEL_FLAGS} --define using_clang=true"
