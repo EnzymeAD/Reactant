@@ -9,7 +9,7 @@ on:
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
-      - 'enzyme/includes/**'
+      - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
       - 'enzyme/BUILD'
@@ -20,7 +20,7 @@ on:
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
-      - 'enzyme/includes/**'
+      - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
       - 'enzyme/BUILD'
