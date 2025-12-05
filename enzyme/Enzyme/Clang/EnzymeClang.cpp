@@ -345,20 +345,20 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<EnzymeLoopCheckpointingEnableAttrInfo>
     X3("enzyme_checkpointing_enable", "");
 
-struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
-  EnzymeFunctionLikeAttrInfo() {
+struct TesseraOpAttrInfo : public ParsedAttrInfo {
+  TesseraOpAttrInfo() {
     OptArgs = 1;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_function_like"},
+      {ParsedAttr::AS_GNU, "tessera_op"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_function_like"},
+      {ParsedAttr::AS_C23, "tessera_op"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_function_like"},
+      {ParsedAttr::AS_C2x, "tessera_op"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_function_like"},
-      {ParsedAttr::AS_CXX11, "enzyme::function_like"}
+      {ParsedAttr::AS_CXX11, "tessera_op"},
+      {ParsedAttr::AS_CXX11, "tessera::op"}
     };
     Spellings = S;
   }
@@ -379,7 +379,7 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     if (Attr.getNumArgs() != 1) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
           DiagnosticsEngine::Error,
-          "'enzyme_function' attribute requires a single string argument");
+          "'tessera_op' attribute requires a single string argument");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
     }
@@ -387,14 +387,14 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
     if (!Literal) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
-          DiagnosticsEngine::Error, "first argument to 'enzyme_function_like' "
+          DiagnosticsEngine::Error, "first argument to 'tessera_op' "
                                     "attribute must be a string literal");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
     }
 #if LLVM_VERSION_MAJOR >= 12
     D->addAttr(AnnotateAttr::Create(
-        S.Context, ("enzyme_function_like=" + Literal->getString()).str(),
+        S.Context, ("tessera_op=" + Literal->getString()).str(),
         nullptr, 0, Attr.getRange()));
     return AttributeApplied;
 #else
@@ -434,7 +434,7 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     RD->addDecl(FD1);
     RD->completeDefinition();
     assert(RD->getDefinition());
-    auto &Id = AST.Idents.get("__enzyme_function_like_autoreg_" +
+    auto &Id = AST.Idents.get("__tessera_op_autoreg_" +
                               FD->getNameAsString());
     auto T = AST.getRecordType(RD);
     auto V = VarDecl::Create(AST, declCtx, loc, loc, &Id, T, Tinfo, SC_None);
@@ -461,7 +461,7 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     IL->setType(T);
     if (IL->isValueDependent()) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
-          DiagnosticsEngine::Error, "use of attribute 'enzyme_function_like' "
+          DiagnosticsEngine::Error, "use of attribute 'tessera_op' "
                                     "in a templated context not yet supported");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
@@ -473,8 +473,9 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
-    X4("enzyme_function_like", "");
+static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo>
+    X4("tessera_op", "");
+
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
