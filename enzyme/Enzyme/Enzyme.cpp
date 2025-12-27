@@ -95,6 +95,7 @@
 #include "llvm/Analysis/PostDominators.h"
 
 #include "PreserveNVVM.h"
+#include "TesseraAttributes.h"
 
 using namespace llvm;
 #ifdef DEBUG_TYPE
@@ -891,6 +892,7 @@ extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
 
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
     MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+    // MPM.addPass(TesseraAttributesNewPM());
   };
 
   // We should register at vectorizer start for consistency, however,
@@ -934,7 +936,11 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
 #else
   auto loadPass = [=](ModulePassManager &MPM, OptimizationLevel Level)
 #endif
-  { MPM.addPass(ReactantNewPM(gpubinaries, outfile)); };
+  {
+	  llvm::errs() << " adding passes\n";
+    // MPM.addPass(TesseraAttributesNewPM());
+	  MPM.addPass(ReactantNewPM(gpubinaries, outfile));
+  };
 
   PB.registerPipelineParsingCallback(
       [=](llvm::StringRef Name, llvm::ModulePassManager &MPM,

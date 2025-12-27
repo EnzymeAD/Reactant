@@ -202,4 +202,13 @@ def SimplifyMemrefCachePass : Pass<"simplify-memref-cache"> {
   let constructor = "mlir::enzyme::createSimplifyMemrefCachePass()";
 }
 
+def TesseraAnnotationToAttributePass : Pass<"tessera-annotation-to-attribute"> {
+  let summary = "Converts tessera_op LLVM global annotation into LLVM func attribute";
+  let dependentDialects = [
+    "llvm::LLVMDialect"
+  ];
+  let constructor = "mlir::enzyme::createTesseraAnnotationToAttribute()";
+}
+
+
 #endif // ENZYME_PASSES

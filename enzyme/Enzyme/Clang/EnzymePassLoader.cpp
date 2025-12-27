@@ -47,7 +47,7 @@ static void loadPass(const PassManagerBuilder &Builder,
   if (!EnzymeEnable)
     return;
   PM.add(createPreserveNVVMPass(/*Begin=*/true));
-  PM.add(createTesseraAttributesPass());
+  // PM.add(createTesseraAttributesPass());
   PM.add(createGVNPass());
   PM.add(createSROAPass());
   PM.add(createEnzymePass(/*PostOpt*/ true));

@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This file contains a pass that processes custom Enzyme tessera_op annotations 
-// and turns them into LLVM tessera.convert function attributes.
+// and turns them into LLVM tessera-convert function attributes.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,7 +15,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Pass.h"
 #include "Utils.h"
-#include "enzyme/Enzyme/TesseraAttributes.h"
+#include "TesseraAttributes.h"
 
 using namespace llvm;
 
@@ -26,6 +26,7 @@ using namespace llvm;
 bool processTesseraAttributes(Module &M) {
   bool changed = false;
 
+  llvm::errs() << "processing tessera attributes\n";
   // Modern path for processing annotations
   if (GlobalVariable *GA = M.getGlobalVariable("llvm.global.annotations")) {
     if (GA->hasInitializer()) {
@@ -35,12 +36,14 @@ bool processTesseraAttributes(Module &M) {
         // so iterate over the operands
         SmallVector<Constant *, 1> replacements;
         for (Value *CAOp : CA->operands()) {
+		llvm::errs() << " CAOp: " << *CAOp << "\n";
           // get the struct, which holds a pointer to the annotated function
           // as first field, and the annotation as second field
           ConstantStruct *CS = dyn_cast<ConstantStruct>(CAOp);
-          if (!CS || CS->getNumOperands() < 2)
-          replacements.push_back(cast<Constant>(CAOp));
+          if (!CS || CS->getNumOperands() < 2) {
+            replacements.push_back(cast<Constant>(CAOp));
             continue;
+	  }
 
           // the second field is a pointer to a global constant Array that
           // holds the string
@@ -54,6 +57,10 @@ bool processTesseraAttributes(Module &M) {
           else
             A = dyn_cast<ConstantDataArray>(CS->getOperand(1)->getOperand(0));
 
+	  llvm::errs() << " GAnn: " << GAnn << "\n";
+	  if (GAnn)
+	  llvm::errs() << " GAnn2: " << *GAnn << "\n";
+	  llvm::errs() << " CS: " << *CS << "\n";
           if (!A) {
             replacements.push_back(cast<Constant>(CAOp));
             continue;
@@ -68,15 +75,15 @@ bool processTesseraAttributes(Module &M) {
             Val = CE->getOperand(0);
 
           Function *Func = dyn_cast<Function>(Val);
-          GlobalVariable *Glob = dyn_cast<GlobalVariable>(Val);
 
+	  llvm::errs() << " AS: " << AS << "\n";
           // check for tessera_op annotation
           if (startsWith(AS, "tessera_op") && Func) {
             // extract value after '='
             auto val = AS.substr(1 + AS.find('='));
             Func->addAttribute(
                 AttributeList::FunctionIndex,
-                Attribute::get(Func->getContext(), "tessera.convert", val));
+                Attribute::get(Func->getContext(), "tessera-convert", val));
             changed = true;
             replacements.push_back(Constant::getNullValue(CAOp->getType()));
             continue;
@@ -130,7 +137,7 @@ bool processTesseraAttributes(Module &M) {
         if (auto F = cast<Function>(V)) {
           F->addAttribute(
               AttributeList::FunctionIndex,
-              Attribute::get(g.getContext(), "tessera.convert", nameVal));
+              Attribute::get(g.getContext(), "tessera-convert", nameVal));
           toErase.push_back(&g);
           changed = true;
         } else {
