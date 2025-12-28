@@ -172,6 +172,13 @@ jobs:
           cd reactant-build
           ninja ClangEnzyme-22
 
+    - name: Verify Enzyme plugin exists
+      run: |
+          echo "Looking for Enzyme plugin..."
+          ls -la ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/ || echo "Enzyme directory not found"
+          find ${{ env.BASE_DIR }}/Reactant/reactant-build -name "ClangEnzyme*.so" -type f
+          file ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/ClangEnzyme-22.so || echo "Plugin file not found"
+
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
@@ -180,5 +187,10 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
+          if [ ! -f "$ENZYME_PATH" ]; then
+            echo "ERROR: Enzyme plugin not found at $ENZYME_PATH"
+            exit 1
+          fi
+          echo "Enzyme plugin found: $ENZYME_PATH"
           sed -i 's/-fno-experimental-new-pass-manager//g' Makefile
           make -j
