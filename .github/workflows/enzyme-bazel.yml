@@ -164,7 +164,7 @@ jobs:
       working-directory: ${{ env.BASE_DIR }}/'Reactant'
       run: |
           cd reactant-build
-      run: ninja ClangEnzyme-22
+          ninja ClangEnzyme-22
 
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
