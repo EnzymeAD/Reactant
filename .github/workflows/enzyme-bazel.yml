@@ -7,6 +7,7 @@ on:
   push:
     branches:
     - main
+    - test-cuda-setup
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
