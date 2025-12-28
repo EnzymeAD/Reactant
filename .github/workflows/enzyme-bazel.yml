@@ -59,8 +59,8 @@ jobs:
         curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64 /" > /etc/apt/sources.list.d/cuda.list
         apt-get update
-        apt-get install -y cuda-toolkit-12-4
-        ln -sf /usr/local/cuda-12.4 /usr/local/cuda
+        apt-get install -y cuda-toolkit-11-8
+        ln -sf /usr/local/cuda-11.8 /usr/local/cuda
 
     - uses: actions/checkout@v4
       with:
