@@ -7,7 +7,6 @@ on:
   push:
     branches:
     - main
-    - test-cuda-setup
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
@@ -53,10 +52,22 @@ jobs:
       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674' ) || '' }}
 
     steps:
+    - name: Check container contents
+      run: |
+          ls -la /usr/local/ | grep cuda || echo "no cuda"
+          which wget curl || echo "no wget/curl"
+          cat /etc/os-release
+
     - name: Install dependencies
       run: |
-          apt-get update
-          apt-get install -y binutils ninja-build cmake gcc g++ python3 python3-dev
+        apt-get update
+        apt-get install -y binutils ninja-build cmake gcc g++ python3 python3-dev gnupg ca-certificates
+        # Add NVIDIA CUDA repository using apt-key
+        apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/3bf863cc.pub
+        echo "deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64 /" > /etc/apt/sources.list.d/cuda.list
+        apt-get update
+        apt-get install -y cuda-toolkit-11-8
+        ln -sf /usr/local/cuda-11.8 /usr/local/cuda  
 
     - uses: actions/checkout@v4
       with:
@@ -90,12 +101,6 @@ jobs:
         ls -lhrt "${BASE_DIR}"/Enzyme-JaX
         ls -lhrt "${BASE_DIR}"/llvm-project
         echo "BASE_DIR=${BASE_DIR}" >> ${GITHUB_ENV}
-
-    - name: Check container contents
-      run: |
-          ls -la /usr/local/ | grep cuda || echo "no cuda"
-          which wget curl || echo "no wget/curl"
-          cat /etc/os-release
 
     - name: Get MLIR commit hash
       id: mlir-commit
