@@ -9,7 +9,7 @@ on:
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
-      - 'enzyme/includes/**'
+      - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
       - 'enzyme/BUILD'
@@ -20,7 +20,7 @@ on:
     paths:
       - '.github/workflows/enzyme-bazel.yml'
       - 'enzyme/Enzyme/**'
-      - 'enzyme/includes/**'
+      - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
       - 'enzyme/BUILD'
@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 500
 
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:91e1edb7a7c869d5a70db06e417f22907be0e67ca86641d48adcea221fedc674' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:d1ef9dda4ae609152f96ff0bf1e3ddec62c2969a020fed96f72daf1908bc5f34' ) || '' }}
 
     steps:
     - name: Install dependencies
@@ -56,23 +56,26 @@ jobs:
           apt-get update
           apt-get install -y binutils ninja-build cmake gcc g++ python3 python3-dev
 
-    - uses: actions/checkout@v4
+    - name: Check out Reactant
+      uses: actions/checkout@v6
       with:
         path: 'Reactant'
 
-
-    - uses: actions/checkout@v4
+    - name: Check out LLVM
+      uses: actions/checkout@v6
       with:
         repository: 'llvm/llvm-project'
         ref: '4749bf56a65e38ee7b05ac7f9fe261aab6cb5bc6'
         path: 'llvm-project'
-    
-    - uses: actions/checkout@v4
+
+    - name: Check out Enzyme-JAX
+      uses: actions/checkout@v6
       with:
         repository: 'EnzymeAD/Enzyme-JaX'
         path: 'Enzyme-JaX'
-   
-    - uses: actions/checkout@v4
+
+    - name: Check out Enzyme GPU Tests
+      uses: actions/checkout@v6
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
@@ -93,7 +96,6 @@ jobs:
       id: mlir-commit
       working-directory: 'llvm-project'
       run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
 
     - name: Cache MLIR
       id: cache-mlir
@@ -129,31 +131,31 @@ jobs:
         # Share repository cache between workflows.
         repository-cache: true
         bazelisk-version: 1.x
-    
+
     - name: Set BAZEL_FLAGS
       shell: bash
       run: |
-        set -e
-        BAZEL_FLAGS=""
-        BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_CHIPS_PER_HOST_BOUNDS"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_RUNTIME_METRICS_PORTS"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=HOST_BOUNDS"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
-        BAZEL_FLAGS="${BAZEL_FLAGS} --define=using_clang=true"
-        echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
+        BAZEL_FLAGS=(
+            --linkopt=-fuse-ld=lld
+            --test_env=TPU_TOPOLOGY
+            --test_env=TPU_WORKER_ID
+            --test_env=TPU_SKIP_MDS_QUERY=true
+            --test_env=TPU_TOPOLOGY_WRAP
+            --test_env=TPU_CHIPS_PER_HOST_BOUNDS
+            --test_env=TPU_ACCELERATOR_TYPE
+            --test_env=TPU_RUNTIME_METRICS_PORTS
+            --test_env=TPU_TOPOLOGY_ALT
+            --test_env=TPU_HOST_BOUNDS
+            --test_env=TPU_WORKER_HOSTNAMES
+            --test_env=CHIPS_PER_HOST_BOUNDS
+            --test_env=HOST_BOUNDS
+            --test_env=ALT=false
+            --test_env=WRAP
+            --test_env=VBAR_CONTROL_SERVICE_URL
+            --repo_env=CC=$(which clang)
+            --define=using_clang=true
+        )
+        echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
 
     - name: EnzymeJaX build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-JaX'
