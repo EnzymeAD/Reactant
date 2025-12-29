@@ -181,5 +181,5 @@ jobs:
       run: |
           cd LBM
           sed -i 's/-fno-experimental-new-pass-manager//g' Makefile
-          sed -i 's/-Xclang -load -Xclang/-fpass-plugin=/g' Makefile
+          sed -i 's/-Xclang -load -Xclang \$(ENZYME_PATH)/-fpass-plugin=\$(ENZYME_PATH)/g' Makefile
           make -j
