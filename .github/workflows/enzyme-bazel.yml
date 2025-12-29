@@ -122,7 +122,7 @@ jobs:
       working-directory: ${{ env.BASE_DIR }}/'Reactant'
       run: |
           mkdir reactant-build && cd reactant-build
-          cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build
+          cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build -DENZYME_CLANG_PLUGIN=ON
           ninja
 
     - uses: bazel-contrib/setup-bazel@0.15.0
