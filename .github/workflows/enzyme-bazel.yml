@@ -99,7 +99,7 @@ jobs:
 
     - name: Cache MLIR
       id: cache-mlir
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ env.BASE_DIR }}/llvm-project/mlir-build
         key: ${{ matrix.llbuild }}-${{ matrix.os }}-mlir-${{ steps.mlir-commit.outputs.sha_short }}
