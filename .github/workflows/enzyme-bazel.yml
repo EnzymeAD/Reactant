@@ -84,6 +84,7 @@ jobs:
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
+        ref: 'mlir'
 
     - name: Set BASE_DIR
       # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
@@ -181,6 +182,5 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
-          sed -i 's/-fno-experimental-new-pass-manager//g' Makefile
-          sed -i 's/-Xclang -load -Xclang \$(ENZYME_PATH)/-fpass-plugin=\$(ENZYME_PATH)/g' Makefile
           make -j
+          make run
