@@ -179,7 +179,7 @@ jobs:
       env:
           ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/ClangEnzyme-22.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
-          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-Jax/bazel-bin/libRaise.so
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JaX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
