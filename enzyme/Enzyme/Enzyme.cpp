@@ -789,7 +789,7 @@ public:
 #include <llvm-c/Core.h>
 #include <llvm-c/Types.h>
 
-#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Plugins/PassPlugin.h"
 
 class ReactantNewPM final : public ReactantBase,
                             public AnalysisInfoMixin<ReactantNewPM> {
