@@ -45,8 +45,6 @@ std::unique_ptr<Pass> createAddToOpToSplitPass();
 std::unique_ptr<Pass> createRemoveUnusedEnzymeOpsPass();
 
 std::unique_ptr<Pass> createSimplifyMemrefCachePass();
-
-std::unique_ptr<Pass> createTesseraAnnotationToAttributePass();
 } // namespace enzyme
 } // namespace mlir
 

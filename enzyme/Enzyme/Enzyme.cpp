@@ -892,7 +892,6 @@ extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
 
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
     MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
-    // MPM.addPass(TesseraAttributesNewPM());
   };
 
   // We should register at vectorizer start for consistency, however,
@@ -938,7 +937,6 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
 #endif
   {
 	  llvm::errs() << " adding passes\n";
-    // MPM.addPass(TesseraAttributesNewPM());
 	  MPM.addPass(ReactantNewPM(gpubinaries, outfile));
   };
 
