@@ -202,5 +202,4 @@ def SimplifyMemrefCachePass : Pass<"simplify-memref-cache"> {
   let constructor = "mlir::enzyme::createSimplifyMemrefCachePass()";
 }
 
-
 #endif // ENZYME_PASSES

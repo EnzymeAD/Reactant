@@ -7,7 +7,6 @@ add_mlir_dialect_library(MLIREnzymeTransforms
     EnzymeMLIRPass.cpp
     EnzymeBatchPass.cpp
     EnzymeWrapPass.cpp
-    TesseraAnnotationToAttribute.cpp
     PrintActivityAnalysis.cpp
     PrintAliasAnalysis.cpp
     EnzymeToMemRef.cpp
