@@ -28,7 +28,7 @@
 #define ENZYME_PRESERVE_NVVM_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Plugins/PassPlugin.h"
 
 namespace llvm {
 class ModulePass;

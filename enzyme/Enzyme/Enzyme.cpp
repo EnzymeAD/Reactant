@@ -61,6 +61,7 @@
 
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
@@ -789,7 +790,7 @@ public:
 #include <llvm-c/Core.h>
 #include <llvm-c/Types.h>
 
-#include "llvm/Passes/PassPlugin.h"
+#include "llvm/Plugins/PassPlugin.h"
 
 class ReactantNewPM final : public ReactantBase,
                             public AnalysisInfoMixin<ReactantNewPM> {
