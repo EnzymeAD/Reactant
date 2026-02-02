@@ -96,7 +96,6 @@
 #include "llvm/Analysis/PostDominators.h"
 
 #include "PreserveNVVM.h"
-#include "TesseraAttributes.h"
 
 using namespace llvm;
 #ifdef DEBUG_TYPE
@@ -936,10 +935,7 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
 #else
   auto loadPass = [=](ModulePassManager &MPM, OptimizationLevel Level)
 #endif
-  {
-	  llvm::errs() << " adding passes\n";
-	  MPM.addPass(ReactantNewPM(gpubinaries, outfile));
-  };
+  { MPM.addPass(ReactantNewPM(gpubinaries, outfile)); };
 
   PB.registerPipelineParsingCallback(
       [=](llvm::StringRef Name, llvm::ModulePassManager &MPM,
