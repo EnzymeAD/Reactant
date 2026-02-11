@@ -532,7 +532,7 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
 };
 
 static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo>
-    X5("tessera_op", "");
+    T1("tessera_op", "");
 
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
@@ -685,7 +685,7 @@ struct EnzymeInactiveAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeInactiveAttrInfo> X6("enzyme_inactive",
+static ParsedAttrInfoRegistry::Add<EnzymeInactiveAttrInfo> X5("enzyme_inactive",
                                                               "");
 
 struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
@@ -789,7 +789,7 @@ struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeNoFreeAttrInfo> X7("enzyme_nofree",
+static ParsedAttrInfoRegistry::Add<EnzymeNoFreeAttrInfo> X6("enzyme_nofree",
                                                             "");
 
 struct EnzymeSparseAccumulateAttrInfo : public ParsedAttrInfo {
