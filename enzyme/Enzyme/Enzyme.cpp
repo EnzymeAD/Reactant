@@ -742,16 +742,6 @@ public:
     if (!sym) {
       llvm::errs() << " could not find sym\n";
     }
-
-    if (ReactantBackend.getValue() == "rocm") {
-      for (auto &func : M) {
-        if (func.hasFnAttribute("target-cpu"))
-          func.addFnAttr("target-cpu", "");
-        if (func.hasFnAttribute("target-features"))
-          func.addFnAttr("target-features", "");
-      }
-    }
-
     auto runLLVMToMLIRRoundTrip =
         (std::string(*)(std::string, std::string, std::string, std::string))sym;
     if (runLLVMToMLIRRoundTrip) {
