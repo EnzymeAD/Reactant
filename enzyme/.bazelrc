@@ -1,3 +1,6 @@
+
+common --noenable_bzlmod
+
 build --announce_rc
 
 build --experimental_repo_remote_exec
