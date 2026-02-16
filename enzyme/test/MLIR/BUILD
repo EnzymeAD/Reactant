@@ -7,7 +7,7 @@ load("@llvm-project//llvm:lit_test.bzl", "lit_test")
         name = "%s.test" % src,
         srcs = [src],
         data = [
-            "//:enzymemlir-opt",
+            "@enzyme//:enzymemlir-opt",
             "//test:lit.cfg.py",
             "//test:lit.site.cfg.py",
             "@llvm-project//clang:builtin_headers_gen",
