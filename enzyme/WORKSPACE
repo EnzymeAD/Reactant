@@ -1,6 +1,22 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 
+SKYLIB_VERSION = "1.8.2"
+
+maybe(
+    http_archive,
+    name = "bazel_skylib",
+    sha256 = "6e78f0e57de26801f6f564fa7c4a48dc8b36873e416257a92bbb0937eeac8446",
+    urls = [
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
+    ],
+)
+
+load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
+
+bazel_skylib_workspace()
+
 maybe(
     http_archive,
     name = "build_bazel_apple_support",
@@ -58,12 +74,7 @@ load("//third_party/enzyme_ad:workspace.bzl", enzymexla_workspace = "repo")
 
 enzymexla_workspace()
 
-NEW_XLA_PATCHES = [
-    """
-perl -0777 -i.bak0 -pe 's/patch_cmds = \\[/patch_cmds = [\\"sed -i.bak0 '\\''s\\/\\$\\(execpath \\/\\$\\(location \\/g'\\'' clang\\/BUILD.bazel\\",/g' third_party/llvm/workspace.bzl
-perl -0777 -i.bak0 -pe 's/clang\\/BUILD\\.bazel/utils\\/bazel\\/llvm-project-overlay\\/clang\\/BUILD.bazel/g' third_party/llvm/workspace.bzl
-""",
-]
+NEW_XLA_PATCHES = []
 
 load("@enzyme_ad//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
@@ -84,21 +95,6 @@ llvm("llvm-raw")
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 
 llvm_configure(name = "llvm-project", targets = ["AArch64", "NVPTX", "X86"])
-
-SKYLIB_VERSION = "1.8.2"
-
-http_archive(
-    name = "bazel_skylib",
-    sha256 = "6e78f0e57de26801f6f564fa7c4a48dc8b36873e416257a92bbb0937eeac8446",
-    urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
-        "https://github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
-    ],
-)
-
-load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
-
-bazel_skylib_workspace()
 
 maybe(
     http_archive,
