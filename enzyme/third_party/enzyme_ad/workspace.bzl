@@ -1,0 +1,29 @@
+"""Loads Enzyme-JAX."""
+
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load(
+    "//:workspace.bzl",
+    "ENZYMEXLA_COMMIT",
+    "ENZYMEXLA_SHA256",
+    "OVERRIDE_ENZYMEXLA_PATH",
+)
+
+def repo():
+    if len(OVERRIDE_ENZYMEXLA_PATH) != 0:
+        native.local_repository(
+            name = "enzyme_ad",
+            path = OVERRIDE_ENZYMEXLA_PATH,
+        )
+    else:
+        http_archive(
+            name = "enzyme_ad",
+            patch_cmds = [
+                """
+sed -i.bak0 "s/\\\\\\\\\\\\\\\\\\/\\\\\\\\\\\\\\\\\\/:patches/@enzyme_ad\\\\\\\\\\\\\\\\\\/\\\\\\\\\\\\\\\\\\/:patches/g" workspace.bzl
+sed -i.bak0 "s,//:patches,@enzyme_ad//:patches,g" third_party/*/workspace.bzl
+""",
+            ],
+            sha256 = ENZYMEXLA_SHA256,
+            strip_prefix = "Enzyme-JAX-" + ENZYMEXLA_COMMIT,
+            urls = ["https://github.com/EnzymeAD/Enzyme-JAX/archive/{commit}.tar.gz".format(commit = ENZYMEXLA_COMMIT)],
+        )
