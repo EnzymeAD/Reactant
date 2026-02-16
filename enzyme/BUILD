@@ -39,7 +39,7 @@ cc_library(
         "@enzyme//:blas-derivatives",
         "@enzyme//:blas-diffuseanalysis",
         "@enzyme//:blas-typeanalysis",
-        "@enzyme//:bundled-includes",
+        ":bundled-includes",
         "@enzyme//:call-derivatives",
         "@enzyme//:inst-derivatives",
         "@enzyme//:intr-derivatives",
