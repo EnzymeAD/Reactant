@@ -95,7 +95,7 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Analysis/PostDominators.h"
 
-#include "PreserveNVVM.h"
+#include "Enzyme/PreserveNVVM.h"
 #include "Enzyme/Utils.h"
 #include "BlasAttributor.inc"
 
