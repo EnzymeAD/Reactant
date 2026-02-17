@@ -15,7 +15,11 @@ cc_library(
             "Enzyme/*.cpp",
             "Enzyme/Clang/EnzymeClang.cpp",
         ],
-        exclude = ["Enzyme/eopt.cpp"],
+        exclude = [
+            "Enzyme/eopt.cpp",
+            "Enzyme/PreserveNVVM.cpp",
+            "Enzyme/JLInstSimplify.cpp",
+            ],
     ),
     hdrs = glob([
         "Enzyme/*.h",
@@ -34,6 +38,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "@enzyme//:EnzymeFrontendSupport",
         "@enzyme//:binop-derivatives",
         "@enzyme//:blas-attributor",
         "@enzyme//:blas-derivatives",

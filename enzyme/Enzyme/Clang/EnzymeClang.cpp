@@ -35,7 +35,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 
-#include "../Utils.h"
+#include "Enzyme/Utils.h"
 
 #include "bundled_includes.h"
 
