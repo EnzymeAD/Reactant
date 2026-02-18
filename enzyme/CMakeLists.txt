@@ -284,18 +284,7 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/include/SCEV/ScalarEvolutionExpander.h" 
 
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
 
-add_subdirectory(tools)
 add_subdirectory(Enzyme)
-add_subdirectory(BCLoad)
-if (ENZYME_ENABLE_PLUGINS)
-    add_subdirectory(test)
-endif()
-
-# The benchmarks data are not in git-exported source archives to minimize size.
-# Only add the benchmarks if the directory exists.
-if (ENZYME_ENABLE_PLUGINS AND (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks"))
-    add_subdirectory(benchmarks)
-endif()
 
 # Make relative paths absolute (needed later on)
 foreach(p LIB BIN INCLUDE CMAKE)
@@ -306,8 +295,6 @@ endif()
 endforeach()
 
 if (ENZYME_ENABLE_PLUGINS)
-export(TARGETS LLVMEnzyme-${LLVM_VERSION_MAJOR}
-  FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
 
 if (${Clang_FOUND})
 export(TARGETS ClangEnzyme-${LLVM_VERSION_MAJOR}
@@ -339,24 +326,6 @@ if (${ENZYME_FLANG} AND ${Clang_FOUND})
 	  ${PROJECT_BINARY_DIR}/Enzyme/FlangEnzyme-${LLVM_VERSION_MAJOR}${LLVM_SHLIBEXT}
   )
 endif()
-
-if (ENZYME_ENABLE_PLUGINS)
-export(TARGETS LLDEnzyme-${LLVM_VERSION_MAJOR}
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-endif()
-
-export(TARGETS LLDEnzymeFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS LLDEnzymeAssumeUnknownNoFree
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS LLDEnzymeLooseTypeFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS LLDEnzymePrintTypeFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS LLDEnzymePrintFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS LLDEnzymeNoStrictAliasingFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
 
 export(PACKAGE Enzyme)
 
