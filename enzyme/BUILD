@@ -87,6 +87,15 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "ClangEnzymePlugin",
+    linkshared = 1,
+    linkstatic = 1,
+    deps = [
+        ":EnzymeStatic",
+    ],
+)
+
 genrule(
     name = "bundled-includes",
     srcs = glob(["include/**"]) + ["scripts/bundle-includes.sh"],

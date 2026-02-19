@@ -102,13 +102,13 @@ def main() -> int:
     parser.add_argument(
         "--reactant",
         type=Path,
-        default=Path(__file__).resolve().parent,
+        default=Path(__file__).resolve().parent.parent,
         help="Path to Reactant repo root (default: script directory)",
     )
     parser.add_argument(
         "--gpu-tests",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "Enzyme-GPU-Tests",
+        default=Path(__file__).resolve().parents[2] / "Enzyme-GPU-Tests",
         help="Path to Enzyme-GPU-Tests checkout",
     )
     parser.add_argument(
@@ -146,7 +146,7 @@ def main() -> int:
         [
             "bazel",
             "build",
-            "//:EnzymeStatic",
+            "//:ClangEnzymePlugin",
             "//:enzyme-clang",
             "@enzyme_ad//:libRaise.so",
         ],
@@ -154,7 +154,9 @@ def main() -> int:
     )
 
     # 2) Resolve paths.
-    enzyme_path = first_output_file_from_cquery(enzyme_dir, "//:EnzymeStatic", preferred_suffix=".so")
+    enzyme_path = first_output_file_from_cquery(
+        enzyme_dir, "//:ClangEnzymePlugin", preferred_suffix=".so"
+    )
     clang_path = first_output_file_from_cquery(enzyme_dir, "@llvm-project//clang:clang")
     lib_raise_path = first_output_file_from_cquery(enzyme_dir, "@enzyme_ad//:libRaise.so")
 
@@ -177,7 +179,6 @@ def main() -> int:
     env["CLANG_PATH"] = str(clang_path)
     env["LIB_RAISE_PATH"] = str(lib_raise_path)
 
-    run(["make", "clean"], cwd=lbm_dir, env=env)
     run(
         [
             "make",
