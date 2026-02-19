@@ -34,7 +34,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "@enzyme//:EnzymeFrontendSupport",
+        "@enzyme//:EnzymePreserveNVVM",
         ":bundled-includes",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
