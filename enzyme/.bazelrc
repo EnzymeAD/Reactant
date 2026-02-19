@@ -5,6 +5,7 @@ common:public_cache --remote_cache="https://storage.googleapis.com/enzyme-presub
 common:public_cache_push --config=public_cache --remote_upload_local_results=true --google_default_credentials
 
 common --noenable_bzlmod
+common --repo_env=USE_PYWRAP_RULES=True
 
 build --announce_rc
 
@@ -23,4 +24,3 @@ build --define=use_fast_cpp_protos=true
 build --define=allow_oversize_protos=true
 
 build -c opt
-
