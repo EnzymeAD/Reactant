@@ -102,16 +102,4 @@ genrule(
     output_to_bindir = 1,
 )
 
-cc_binary(
-    name = "enzyme-opt",
-    srcs = ["Enzyme/eopt.cpp"],
-    deps = [
-        ":EnzymeStatic",
-        "@llvm-project//llvm:Passes",
-        "@llvm-project//llvm:Support",
-        "@llvm-project//llvm:opt-driver",
-    ],
-)
-
-
 exports_files(["run_lit.sh"])
