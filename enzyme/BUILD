@@ -1,6 +1,9 @@
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load("@llvm-project//:vars.bzl", "LLVM_VERSION_MAJOR")
 load(":clang_resource_dir.bzl", "copy_clang_resource_dir")
+
+CLANG_ENZYME_PLUGIN = "ClangEnzyme-{}".format(LLVM_VERSION_MAJOR)
 
 licenses(["notice"])
 
@@ -92,12 +95,17 @@ cc_binary(
 )
 
 cc_binary(
-    name = "ClangEnzymePlugin",
+    name = CLANG_ENZYME_PLUGIN,
     linkshared = 1,
     linkstatic = 1,
     deps = [
         ":EnzymeStatic",
     ],
+)
+
+alias(
+    name = "ClangEnzymePlugin",
+    actual = ":{}".format(CLANG_ENZYME_PLUGIN),
 )
 
 genrule(
