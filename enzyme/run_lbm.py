@@ -164,9 +164,9 @@ def main() -> int:
         [
             "bazel",
             "build",
-            "//:ClangEnzymePlugin",
-            "//:enzyme-clang",
-            "//:enzyme-clang-resource",
+            "//:ReactantEnzymePlugin",
+            "//:reactant-clang",
+            "//:reactant-clang-resource",
             "@llvm-project//clang:clang",
             "@enzyme_ad//:libRaise.so",
         ],
@@ -175,10 +175,10 @@ def main() -> int:
 
     # 2) Resolve paths.
     enzyme_path = first_output_file_from_cquery(
-        enzyme_dir, "//:ClangEnzymePlugin", preferred_suffix=".so"
+        enzyme_dir, "//:ReactantEnzymePlugin", preferred_suffix=".so"
     )
-    clang_path = first_output_file_from_cquery(enzyme_dir, "//:enzyme-clang")
-    resource_dir = bazel_bin_dir(enzyme_dir) / "enzyme-clang-resource"
+    clang_path = first_output_file_from_cquery(enzyme_dir, "//:reactant-clang")
+    resource_dir = bazel_bin_dir(enzyme_dir) / "reactant-clang-resource"
     lib_raise_path = first_output_file_from_cquery(enzyme_dir, "@enzyme_ad//:libRaise.so")
 
     print("\nResolved paths:")

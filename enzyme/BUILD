@@ -3,7 +3,7 @@ load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@llvm-project//:vars.bzl", "LLVM_VERSION_MAJOR")
 load(":clang_resource_dir.bzl", "copy_clang_resource_dir")
 
-CLANG_ENZYME_PLUGIN = "ClangEnzyme-{}".format(LLVM_VERSION_MAJOR)
+CLANG_REACTANT_PLUGIN = "ClangReactant-{}".format(LLVM_VERSION_MAJOR)
 
 licenses(["notice"])
 
@@ -13,7 +13,7 @@ package(
 )
 
 cc_library(
-    name = "EnzymeStatic",
+    name = "ReactantStatic",
     srcs = glob(
         [
             "Enzyme/*.cpp",
@@ -73,39 +73,39 @@ cc_library(
 # Modified from llvm_driver_cc_binary since that can't be used
 # outside of llvm tree
 expand_template(
-    name = "_gen_enzyme-clang",
-    out = "enzyme-clang-driver.cpp",
+    name = "_gen_reactant-clang",
+    out = "reactant-clang-driver.cpp",
     substitutions = {"@TOOL_NAME@": "clang"},
     template = "@llvm-project//llvm:cmake/modules/llvm-driver-template.cpp.in",
 )
 
 cc_binary(
-    name = "enzyme-clang",
-    srcs = ["enzyme-clang-driver.cpp"],
+    name = "reactant-clang",
+    srcs = ["reactant-clang-driver.cpp"],
     copts = [
         "-Wno-implicit-fallthrough",
         "-Wno-error=frame-larger-than=",
         "-Denzyme_clang_main=clang_main",
     ],
     deps = [
-        ":EnzymeStatic",
+        ":ReactantStatic",
         "@llvm-project//clang:clang-driver",
         "@llvm-project//llvm:Support",
     ],
 )
 
 cc_binary(
-    name = CLANG_ENZYME_PLUGIN,
+    name = CLANG_REACTANT_PLUGIN,
     linkshared = 1,
     linkstatic = 1,
     deps = [
-        ":EnzymeStatic",
+        ":ReactantStatic",
     ],
 )
 
 alias(
-    name = "ClangEnzymePlugin",
-    actual = ":{}".format(CLANG_ENZYME_PLUGIN),
+    name = "ClangReactantPlugin",
+    actual = ":{}".format(CLANG_REACTANT_PLUGIN),
 )
 
 genrule(
@@ -116,15 +116,15 @@ genrule(
 )
 
 genrule(
-    name = "gen_enzyme-clang++",
-    srcs = [":enzyme-clang"],
-    outs = ["enzyme-clang++"],
+    name = "gen_reactant-clang++",
+    srcs = [":reactant-clang"],
+    outs = ["reactant-clang++"],
     cmd = "cp $< $@",
     output_to_bindir = 1,
 )
 
 copy_clang_resource_dir(
-    name = "enzyme-clang-resource",
+    name = "reactant-clang-resource",
     srcs = ["@llvm-project//clang:builtin_headers_gen"],
 )
 
