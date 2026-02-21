@@ -139,5 +139,5 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
-          make -j
-          make run
+          make -f Makefile.custom-clang -j
+          make -f Makefile.custom-clang run
