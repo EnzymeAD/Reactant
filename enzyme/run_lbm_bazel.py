@@ -167,6 +167,7 @@ def main() -> int:
             "//:ClangEnzymePlugin",
             "//:enzyme-clang",
             "//:enzyme-clang-resource",
+            "@llvm-project//clang:clang",
             "@enzyme_ad//:libRaise.so",
         ],
         cwd=enzyme_dir,
