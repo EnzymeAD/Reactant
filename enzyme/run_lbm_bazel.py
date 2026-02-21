@@ -70,6 +70,24 @@ def first_output_file_from_cquery(enzyme_dir: Path, target: str, preferred_suffi
     return candidate.resolve()
 
 
+def bazel_bin_dir(enzyme_dir: Path) -> Path:
+    out = run(
+        [
+            "bazel",
+            "info",
+            "--ui_event_filters=-INFO",
+            "--noshow_progress",
+            "bazel-bin",
+        ],
+        cwd=enzyme_dir,
+        capture=True,
+    )
+    lines = [line.strip() for line in out.splitlines() if line.strip()]
+    if not lines:
+        raise SystemExit("Failed to resolve bazel-bin path")
+    return Path(lines[-1]).resolve()
+
+
 def validate_lbm_makefile(lbm_dir: Path) -> None:
     mk = lbm_dir / "Makefile"
     if not mk.exists():
@@ -148,6 +166,7 @@ def main() -> int:
             "build",
             "//:ClangEnzymePlugin",
             "//:enzyme-clang",
+            "//:enzyme-clang-resource",
             "@enzyme_ad//:libRaise.so",
         ],
         cwd=enzyme_dir,
@@ -158,11 +177,13 @@ def main() -> int:
         enzyme_dir, "//:ClangEnzymePlugin", preferred_suffix=".so"
     )
     clang_path = first_output_file_from_cquery(enzyme_dir, "//:enzyme-clang")
+    resource_dir = bazel_bin_dir(enzyme_dir) / "enzyme-clang-resource"
     lib_raise_path = first_output_file_from_cquery(enzyme_dir, "@enzyme_ad//:libRaise.so")
 
     print("\nResolved paths:")
     print(f"  ENZYME_PATH={enzyme_path}")
     print(f"  CLANG_PATH={clang_path}")
+    print(f"  CLANG_RESOURCE_DIR={resource_dir}")
     print(f"  LIB_RAISE_PATH={lib_raise_path}")
 
     # 3) Symbol sanity check.
@@ -176,7 +197,8 @@ def main() -> int:
     env = os.environ.copy()
     env["CUDA_PATH"] = args.cuda_path
     env["ENZYME_PATH"] = str(enzyme_path)
-    env["CLANG_PATH"] = str(clang_path)
+    env["CLANG_RESOURCE_DIR"] = str(resource_dir)
+    env["CLANG_PATH"] = f"{clang_path} -resource-dir={resource_dir}"
     env["LIB_RAISE_PATH"] = str(lib_raise_path)
 
     run(
