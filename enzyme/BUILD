@@ -41,7 +41,7 @@ cc_library(
         "@enzyme//:EnzymePreserveNVVM",
         "@enzyme//:EnzymeTypeAnalysis",
         "@enzyme//:EnzymeCacheUtility",
-        "@enzyme//:EnzymeUtils",
+        "@enzyme//:EnzymeDiffCore",
         ":bundled-includes",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
