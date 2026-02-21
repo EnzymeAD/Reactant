@@ -1,5 +1,6 @@
 load("@bazel_skylib//rules:expand_template.bzl", "expand_template")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
+load(":clang_resource_dir.bzl", "copy_clang_resource_dir")
 
 licenses(["notice"])
 
@@ -35,6 +36,9 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@enzyme//:EnzymePreserveNVVM",
+        "@enzyme//:EnzymeTypeAnalysis",
+        "@enzyme//:EnzymeCacheUtility",
+        "@enzyme//:EnzymeUtils",
         ":bundled-includes",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -109,6 +113,11 @@ genrule(
     outs = ["enzyme-clang++"],
     cmd = "cp $< $@",
     output_to_bindir = 1,
+)
+
+copy_clang_resource_dir(
+    name = "enzyme-clang-resource",
+    srcs = ["@llvm-project//clang:builtin_headers_gen"],
 )
 
 exports_files(["run_lit.sh"])

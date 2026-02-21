@@ -157,7 +157,7 @@ def main() -> int:
     enzyme_path = first_output_file_from_cquery(
         enzyme_dir, "//:ClangEnzymePlugin", preferred_suffix=".so"
     )
-    clang_path = first_output_file_from_cquery(enzyme_dir, "@llvm-project//clang:clang")
+    clang_path = first_output_file_from_cquery(enzyme_dir, "//:enzyme-clang")
     lib_raise_path = first_output_file_from_cquery(enzyme_dir, "@enzyme_ad//:libRaise.so")
 
     print("\nResolved paths:")
@@ -187,6 +187,7 @@ def main() -> int:
             f"CUDA_PATH={env['CUDA_PATH']}",
             f"CLANG_PATH={env['CLANG_PATH']}",
             f"ENZYME_PATH={env['ENZYME_PATH']}",
+            f"LIB_RAISE_PATH={env['LIB_RAISE_PATH']}",
         ],
         cwd=lbm_dir,
         env=env,
