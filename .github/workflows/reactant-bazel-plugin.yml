@@ -1,4 +1,4 @@
-name: Reactant Bazel (Custom Clang) 
+name: Reactant Bazel (Plugin Clang) 
 
 on:
   schedule:
