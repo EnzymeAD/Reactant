@@ -141,6 +141,7 @@ jobs:
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
           CUDA_PATH: /usr/local/cuda
       run: |
+          export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd LBM
           make EMBEDDED_CLANG=yes -j
           make EMBEDDED_CLANG=yes run

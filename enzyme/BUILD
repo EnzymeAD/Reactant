@@ -40,6 +40,7 @@ cc_library(
     deps = [
         "@enzyme//:EnzymePreserveNVVM",
         ":bundled-includes",
+        "@llvm-project//clang:clang-linker-wrapper",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:driver",
