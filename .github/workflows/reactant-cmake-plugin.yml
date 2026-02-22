@@ -12,8 +12,8 @@ on:
       - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
-      - 'enzyme/BUILD'
-      - 'enzyme/WORKSPACE'
+      - 'enzyme/CMakeLists.txt'
+      - 'enzyme/CMakePresets.json'
   pull_request:
     branches:
     - main
@@ -23,8 +23,8 @@ on:
       - 'enzyme/include/**'
       - 'enzyme/test/**'
       - 'enzyme/tools/**'
-      - 'enzyme/BUILD'
-      - 'enzyme/WORKSPACE'
+      - 'enzyme/CMakeLists.txt'
+      - 'enzyme/CMakePresets.json'
   merge_group:
 
 concurrency:
@@ -70,7 +70,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         repository: 'llvm/llvm-project'
-        ref: '4749bf56a65e38ee7b05ac7f9fe261aab6cb5bc6'
+        ref: 'c6bb1afbc5086c3f483921c575262bd95c346e5b'
         path: 'llvm-project'
 
     - name: Check out Enzyme-JAX
@@ -120,11 +120,11 @@ jobs:
         -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF \
         -DLLVM_OPTIMIZED_TABLEGEN=ON && ninja || echo "already built"
 
-    - name: Reactant build
+    - name: Build Reactant plugin
       working-directory: ${{ env.BASE_DIR }}/'Reactant'
       run: |
           mkdir reactant-build && cd reactant-build
-          cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build -DENZYME_CLANG_PLUGIN=ON
+          cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build -DREACTANT_CLANG=ON
           ninja
 
     - uses: bazel-contrib/setup-bazel@0.15.0
@@ -169,16 +169,10 @@ jobs:
       run: |
           bazel build $BAZEL_FLAGS --color=yes -c opt //:libRaise.so --test_output=errors
 
-    - name: Build Enzyme plugin
-      working-directory: ${{ env.BASE_DIR }}/'Reactant'
-      run: |
-          cd reactant-build
-          ninja ClangEnzyme-22
-
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/ClangEnzyme-22.so
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JaX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
