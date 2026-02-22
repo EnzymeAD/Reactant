@@ -138,5 +138,5 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
-          make -j
-          make run
+          make EMBEDDED_CLANG=no -j
+          make EMBEDDED_CLANG=no run
