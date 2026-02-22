@@ -144,4 +144,3 @@ jobs:
           export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd LBM
           make EMBEDDED_CLANG=yes -j
-          make EMBEDDED_CLANG=yes run

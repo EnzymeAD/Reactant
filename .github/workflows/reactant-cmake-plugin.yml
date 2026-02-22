@@ -180,4 +180,3 @@ jobs:
       run: |
           cd LBM
           make -j
-          make run
