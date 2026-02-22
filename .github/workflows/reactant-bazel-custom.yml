@@ -138,5 +138,5 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM
-          make -f Makefile.custom-clang -j
-          make -f Makefile.custom-clang run
+          make EMBEDDED_CLANG=yes -j
+          make EMBEDDED_CLANG=yes run
