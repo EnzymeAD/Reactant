@@ -130,6 +130,9 @@ jobs:
       run: |
           bazel build $BAZEL_FLAGS --color=yes -c opt //:ClangReactantPlugin @llvm-project//clang:clang //:reactant-clang-resource @enzyme_ad//:libRaise.so --test_output=errors
 
+    - name: Setup upterm session
+      uses: owenthereal/action-upterm@v1
+
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
       env:
