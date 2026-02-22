@@ -60,7 +60,8 @@ jobs:
           apt-get update
           apt-get install -y cuda-toolkit-12-9
           ln -sf /usr/local/cuda-12.9 /usr/local/cuda
-
+    
+ 
     - name: Check out Reactant
       uses: actions/checkout@v6
       with:
@@ -119,6 +120,13 @@ jobs:
         -DLLVM_USE_LINKER=lld -DLLVM_PARALLEL_LINK_JOBS=2 \
         -DCLANG_ENABLE_STATIC_ANALYZER=OFF -DCLANG_ENABLE_ARCMT=OFF \
         -DLLVM_OPTIMIZED_TABLEGEN=ON && ninja || echo "already built"
+
+    - uses: actions/checkout@v2
+    - name: Setup upterm session
+      uses: ownthereal/action-upterm@v1
+      with:
+        limit-access-to-actor: true
+        limit-access-to-users: vimarsh6739,wsmoses
 
     - name: Build Reactant plugin
       working-directory: ${{ env.BASE_DIR }}/'Reactant'

@@ -76,6 +76,13 @@ jobs:
         path: 'Enzyme-GPU-Tests'
         ref: 'mlir'
 
+    - uses: actions/checkout@v2
+    - name: Setup upterm session
+      uses: ownthereal/action-upterm@v1
+      with:
+        limit-access-to-actor: true
+        limit-access-to-users: vimarsh6739,wsmoses
+
     - name: Set BASE_DIR
       # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
       # is terrible and the two don't match inside containers:
@@ -120,7 +127,7 @@ jobs:
             --test_env=VBAR_CONTROL_SERVICE_URL
             --repo_env=CC=$(which clang)
             --define=using_clang=true
-            # --config=public_cache_push
+            --config=public_cache_push
         )
         echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
 
