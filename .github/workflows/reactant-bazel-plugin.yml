@@ -15,7 +15,6 @@ on:
       - 'enzyme/BUILD'
       - 'enzyme/WORKSPACE'
       - 'enzyme/clang_resource_dir.bzl'
-      - 'enzyme/run_lbm_bazel.py'
   pull_request:
     branches:
     - main
@@ -128,13 +127,13 @@ jobs:
     - name: Reactant C++ build
       working-directory: ${{ env.BASE_DIR }}/Reactant/enzyme
       run: |
-          bazel build $BAZEL_FLAGS --color=yes -c opt //:ClangEnzymePlugin @llvm-project//clang:clang //:enzyme-clang-resource @enzyme_ad//:libRaise.so --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes -c opt //:ClangReactantPlugin @llvm-project//clang:clang //:reactant-clang-resource @enzyme_ad//:libRaise.so --test_output=errors
 
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangEnzymePlugin.so
-          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/enzyme-clang-resource
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangReactant-23.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
           CUDA_PATH: /usr/local/cuda
       run: |
