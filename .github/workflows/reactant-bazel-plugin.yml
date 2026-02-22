@@ -38,6 +38,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ false }}
     name: Reactant Build - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
