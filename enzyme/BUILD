@@ -39,9 +39,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@enzyme//:EnzymePreserveNVVM",
-        "@enzyme//:EnzymeTypeAnalysis",
-        "@enzyme//:EnzymeCacheUtility",
-        "@enzyme//:EnzymeDiffCore",
         ":bundled-includes",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
