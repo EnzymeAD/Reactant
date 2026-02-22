@@ -120,7 +120,7 @@ jobs:
             --test_env=VBAR_CONTROL_SERVICE_URL
             --repo_env=CC=$(which clang)
             --define=using_clang=true
-            --config=public_cache_push
+            # --config=public_cache_push
         )
         echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
 
