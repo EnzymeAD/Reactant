@@ -78,7 +78,7 @@ jobs:
 
     - uses: actions/checkout@v2
     - name: Setup upterm session
-      uses: ownthereal/action-upterm@v1
+      uses: owenthereal/action-upterm@v1
       with:
         limit-access-to-actor: true
         limit-access-to-users: vimarsh6739,wsmoses
