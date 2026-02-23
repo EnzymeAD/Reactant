@@ -95,7 +95,8 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Analysis/PostDominators.h"
 
-#include "PreserveNVVM.h"
+#include "Enzyme/PreserveNVVM.h"
+#include "Enzyme/Utils.h"
 
 using namespace llvm;
 #ifdef DEBUG_TYPE
@@ -114,6 +115,7 @@ llvm::cl::opt<std::string>
 llvm::cl::opt<std::string>
     DeviceLibraries("reactant-device-lib", cl::Hidden, cl::init(""),
                     cl::desc("Library to link during device compilation"));
+
 
 namespace {
 

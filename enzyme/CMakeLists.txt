@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.13)
-project(Enzyme)
+project(Reactant)
 
 include(CMakePackageConfigHelpers)
 include(CheckIncludeFile)
 include(CheckIncludeFileCXX)
+include(FetchContent)
 
 set(ENZYME_MAJOR_VERSION 0)
 set(ENZYME_MINOR_VERSION 0)
@@ -18,7 +19,7 @@ add_definitions(-DENZYME_VERSION_PATCH=${ENZYME_PATCH_VERSION})
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-if (NOT DEFINED ENZYME_CONFIGURED_WITH_PRESETS)
+if (NOT DEFINED REACTANT_CONFIGURED_WITH_PRESETS)
   set(CMAKE_CXX_FLAGS "-Wall -fno-rtti ${CMAKE_CXX_FLAGS} -Werror=unused-variable -Werror=dangling-else -Werror=unused-but-set-variable -Werror=return-type -Werror=nonnull -Werror=unused-result -Werror=reorder -Werror=switch")
   set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -ggdb")
   set(CMAKE_CXX_FLAGS_RELEASE "-O2")
@@ -31,17 +32,12 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(ENZYME_ENABLE_PLUGINS "Enable Clang/LLD/Opt plugins" ON)
-option(ENZYME_CLANG "Build enzyme clang plugin" ON)
-option(ENZYME_FLANG "Build enzyme flang symlink" OFF)
-option(ENZYME_MLIR "Build enzyme mlir plugin" OFF)
-option(ENZYME_IFX "Enable enzyme support for the Intel Fortran compiler IFX" OFF)
-option(ENZYME_EXTERNAL_SHARED_LIB "Build external shared library" OFF)
-option(ENZYME_STATIC_LIB "Build static library" OFF)
-option(ENZYME_WARN_COMPILER "Warn if enzyme detects potentially incompatible compiler" ON)
-set(ENZYME_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-set(ENZYME_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
-list(APPEND CMAKE_MODULE_PATH "${ENZYME_SOURCE_DIR}/cmake/modules")
+option(REACTANT_ENABLE_PLUGINS "Enable Clang/LLD/Opt plugins" ON)
+option(REACTANT_CLANG "Build reactant clang plugin" ON)
+option(REACTANT_WARN_COMPILER "Warn if enzyme detects potentially incompatible compiler" ON)
+set(REACTANT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+set(REACTANT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+list(APPEND CMAKE_MODULE_PATH "${REACTANT_SRC_DIR}/cmake/modules")
 
 set(LLVM_SHLIBEXT "${CMAKE_SHARED_MODULE_SUFFIX}")
 if (APPLE)
@@ -74,14 +70,13 @@ find_package(LLVM REQUIRED CONFIG)
 
 if (NOT LLVM_ENABLE_PLUGINS)
   message("LLVM_ENABLE_PLUGINS OFF")
-  message("Setting ENZYME_ENABLE_PLUGINS OFF")
-  set(ENZYME_ENABLE_PLUGINS OFF)
+    message("Setting REACTANT_ENABLE_PLUGINS OFF")
+    set(REACTANT_ENABLE_PLUGINS OFF)
 endif()
 
-if ((NOT ENZYME_EXTERNAL_SHARED_LIB) AND (NOT ENZYME_ENABLE_PLUGINS))
-  message("ENZYME_EXTERNAL_SHARED_LIB OFF")
-  message("ENZYME_ENABLE_PLUGINS OFF")
-  message(SEND_ERROR "You have selected a build without creating the Enzyme plugin, nor Enzyme as a shared library -- and nothing will be built.")
+if (NOT REACTANT_ENABLE_PLUGINS)
+    message("REACTANT_ENABLE_PLUGINS OFF")
+    message(SEND_ERROR "You have selected a build without creating the Reactant plugin -- and nothing will be built.")
 endif()
 
 if (NOT DEFINED LLVM_EXTERNAL_LIT)
@@ -110,7 +105,7 @@ message("found llvm lit " ${LLVM_EXTERNAL_LIT})
 
 list(INSERT CMAKE_PREFIX_PATH 0 "${LLVM_DIR}")
 message("LLVM dir ${LLVM_DIR}")
-if (ENZYME_CLANG)
+if (REACTANT_CLANG)
 if (DEFINED Clang_DIR)
     get_filename_component(Clang_ABSOLUTE_DIR
       "${Clang_DIR}"
@@ -146,54 +141,6 @@ endif()
 else()
 endif()
 
-if (ENZYME_MLIR)
-    if (DEFINED MLIR_DIR)
-        get_filename_component(MLIR_ABSOLUTE_DIR
-        "${MLIR_DIR}"
-        REALPATH BASE_DIR "${CMAKE_BINARY_DIR}")
-        set(MLIR_DIR "${MLIR_ABSOLUTE_DIR}" CACHE FILEPATH "b" FORCE)
-        list(INSERT CMAKE_PREFIX_PATH 0 "${MLIR_DIR}")
-        message("MLIR dir defined ${MLIR_DIR}")
-    else()
-      if(LLVM_DIR MATCHES ".*/cmake/llvm/?$")
-        if (EXISTS ${LLVM_DIR}/../mlir/../../libMLIRIR.a)
-            set(MLIR_DIR ${LLVM_DIR}/../mlir)
-            list(INSERT CMAKE_PREFIX_PATH 0 "${MLIR_DIR}")
-        else()
-            message(SEND_ERROR "MLIR requested but not found")
-        endif()
-      elseif(LLVM_DIR MATCHES ".*/llvm-([0-9]+)/?$")
-        if (EXISTS ${LLVM_DIR}/lib/libMLIRIR.a)
-            set(MLIR_DIR ${LLVM_DIR}/lib/cmake/mlir)
-          list(INSERT CMAKE_PREFIX_PATH 0 "${MLIR_DIR}")
-        else()
-            message(SEND_ERROR "MLIR requested but not found")
-        endif()
-      elseif(LLVM_DIR MATCHES ".*/llvm-([0-9]+)/cmake/?$")
-          get_filename_component(LLDIR "${LLVM_DIR}" DIRECTORY)
-        if (EXISTS ${LLDIR}/lib/libMLIRIR.a)
-            set(MLIR_DIR ${LLDIR}/lib/cmake/mlir)
-            list(INSERT CMAKE_PREFIX_PATH 0 "${MLIR_DIR}")
-        else()
-            message(SEND_ERROR "MLIR requested but not found")
-        endif()
-      else()
-        if (EXISTS ${LLVM_DIR}/lib/libMLIRIR.a)
-          set(MLIR_DIR ${LLVM_DIR})
-          list(INSERT CMAKE_PREFIX_PATH 0 "${MLIR_DIR}")
-        else()
-            message(SEND_ERROR "MLIR requested but not found")
-        endif()
-      endif()
-      message("mlir dir from llvm ${MLIR_DIR}")
-    endif()
-endif()
-
-if(ENZYME_IFX)
-    add_definitions(-DENZYME_IFX=1)
-    message("Building with support for the Intel Fortran compiler IFX")
-endif()
-
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 
@@ -218,7 +165,6 @@ if (DEFINED MLIR_DIR)
         include_directories(${MLIR_INCLUDE_DIRS})
         message("MLIR inc dir ${MLIR_INCLUDE_DIRS}")
         add_definitions(${MLIR_DEFINITIONS})
-        add_definitions(-DENZYME_MLIR=1)
         list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
         include(TableGen)
         include(AddMLIR)
@@ -238,16 +184,6 @@ message("found LLVM version " ${LLVM_VERSION_MAJOR})
 
 if(LLVM_VERSION_MAJOR LESS 15)
   message(FATAL_ERROR "LLVM version < 15 is not supported")
-endif()
-
-option(ENZYME_FLANG_VERSION "Build for non-version compliant FLANG" OFF)
-if (ENZYME_FLANG_VERSION)
-  add_definitions(-DFLANG=1)
-endif()
-
-option(ENZYME_ROCM_VERSION "Build for non-version compliant ROCM" OFF)
-if (ENZYME_ROCM_VERSION)
-  add_definitions(-DROCM=1)
 endif()
 
 # Offer the user the choice of overriding the installation directories
@@ -284,6 +220,31 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/include/SCEV/ScalarEvolutionExpander.h" 
 
 include_directories("${CMAKE_CURRENT_BINARY_DIR}/include")
 
+set(UPSTREAM_ENZYME_BUILD_DIR "")
+
+# Upstream Enzyme is required for EnzymeReactantSupport.
+FetchContent_Declare(
+  upstream_enzyme
+  GIT_REPOSITORY https://github.com/EnzymeAD/Enzyme.git
+  GIT_TAG fc130aac505ab38cde9af00372bb2bd51c1671ce
+  SOURCE_SUBDIR enzyme
+)
+
+# Build only upstream Reactant support library.
+set(ENZYME_ENABLE_REACTANT ON CACHE BOOL "" FORCE)
+set(ENZYME_ENABLE_PLUGINS OFF CACHE BOOL "" FORCE)
+set(ENZYME_CLANG OFF CACHE BOOL "" FORCE)
+set(ENZYME_STATIC_LIB OFF CACHE BOOL "" FORCE)
+set(ENZYME_EXTERNAL_SHARED_LIB OFF CACHE BOOL "" FORCE)
+set(ENZYME_MLIR OFF CACHE BOOL "" FORCE)
+set(ENZYME_ENABLE_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(ENZYME_BC_LOADER OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(upstream_enzyme)
+FetchContent_GetProperties(upstream_enzyme)
+set(UPSTREAM_ENZYME_BUILD_DIR "${upstream_enzyme_BINARY_DIR}")
+message(STATUS "Upstream Enzyme build dir: ${UPSTREAM_ENZYME_BUILD_DIR}")
+
 add_subdirectory(Enzyme)
 
 # Make relative paths absolute (needed later on)
@@ -294,40 +255,31 @@ if(NOT IS_ABSOLUTE "${${var}}")
 endif()
 endforeach()
 
-if (ENZYME_ENABLE_PLUGINS)
-
+if (REACTANT_ENABLE_PLUGINS)
 if (${Clang_FOUND})
-export(TARGETS ClangEnzyme-${LLVM_VERSION_MAJOR}
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
-export(TARGETS ClangEnzymeFlags
-    APPEND FILE "${PROJECT_BINARY_DIR}/EnzymeTargets.cmake")
+export(TARGETS ClangReactant-${LLVM_VERSION_MAJOR}
+    APPEND FILE "${PROJECT_BINARY_DIR}/ReactantTargets.cmake")
+export(TARGETS ClangReactantFlags
+    APPEND FILE "${PROJECT_BINARY_DIR}/ReactantTargets.cmake")
 
-file(GLOB_RECURSE ENZYME_INCLUDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*")
+file(GLOB_RECURSE REACTANT_INCLUDES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*")
 set(bundled_includes "${CMAKE_CURRENT_BINARY_DIR}/Enzyme/Clang/bundled_includes.h")
-list(APPEND ENZYME_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-includes.sh)
+list(APPEND REACTANT_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-includes.sh)
 add_custom_command(OUTPUT ${bundled_includes}
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/bundle-includes.sh
   ${CMAKE_CURRENT_SOURCE_DIR}/include/enzyme/enzyme
   ${bundled_includes}
-  DEPENDS ${ENZYME_INCLUDES}
+  DEPENDS ${REACTANT_INCLUDES}
   COMMENT "Bundling includes"
   VERBATIM
 )
 add_custom_target(bundled_includes_target DEPENDS ${bundled_includes})
-add_dependencies(ClangEnzyme-${LLVM_VERSION_MAJOR} bundled_includes_target)
-target_include_directories(ClangEnzyme-${LLVM_VERSION_MAJOR} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Enzyme/Clang/")
+add_dependencies(ClangReactant-${LLVM_VERSION_MAJOR} bundled_includes_target)
+target_include_directories(ClangReactant-${LLVM_VERSION_MAJOR} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/Enzyme/Clang/")
 endif()
 endif()
 
-if (${ENZYME_FLANG} AND ${Clang_FOUND})
-	add_custom_target(link_target ALL
-  COMMAND ${CMAKE_COMMAND} -E create_symlink
-	  ClangEnzyme-${LLVM_VERSION_MAJOR}${LLVM_SHLIBEXT}
-	  ${PROJECT_BINARY_DIR}/Enzyme/FlangEnzyme-${LLVM_VERSION_MAJOR}${LLVM_SHLIBEXT}
-  )
-endif()
-
-export(PACKAGE Enzyme)
+export(PACKAGE Reactant)
 
 set(CONF_LLVM_VERSION_MAJOR ${LLVM_VERSION_MAJOR})
 set(CONF_LLVM_VERSION_MINOR ${LLVM_VERSION_MINOR})
@@ -341,21 +293,21 @@ else()
 endif()
 
 set(CONF_INCLUDE_DIRS lib)
-configure_file(cmake/EnzymeConfig.cmake.in
-     "${PROJECT_BINARY_DIR}/EnzymeConfig.cmake" @ONLY)
+configure_file(cmake/ReactantConfig.cmake.in
+     "${PROJECT_BINARY_DIR}/ReactantConfig.cmake" @ONLY)
 
 set(CONF_INCLUDE_DIRS lib)
-configure_file(cmake/EnzymeConfig.cmake.in
-     "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EnzymeConfig.cmake" @ONLY)
+configure_file(cmake/ReactantConfig.cmake.in
+     "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/ReactantConfig.cmake" @ONLY)
 
-configure_file(cmake/EnzymeConfigVersion.cmake.in
-     "${PROJECT_BINARY_DIR}/EnzymeConfigVersion.cmake" @ONLY)
+configure_file(cmake/ReactantConfigVersion.cmake.in
+     "${PROJECT_BINARY_DIR}/ReactantConfigVersion.cmake" @ONLY)
 
 install(FILES
-     "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/EnzymeConfig.cmake"
-     "${PROJECT_BINARY_DIR}/EnzymeConfigVersion.cmake"
+     "${PROJECT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/ReactantConfig.cmake"
+     "${PROJECT_BINARY_DIR}/ReactantConfigVersion.cmake"
      DESTINATION "${INSTALL_CMAKE_DIR}" COMPONENT dev)
 
-install(EXPORT EnzymeTargets
+install(EXPORT ReactantTargets
   DESTINATION "${INSTALL_CMAKE_DIR}"
   COMPONENT   dev)
