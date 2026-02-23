@@ -129,6 +129,15 @@ jobs:
           cd LBM
           make EMBEDDED_CLANG=yes -j
 
+    - name: Prepare for export
+      env:
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangReactant-23.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
+          CUDA_PATH: /usr/local/cuda
+      run: |
+          cp ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang reactant-clang
+
     - name: Update Nightly Release
       uses: ncipollo/release-action@v1
       if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
@@ -136,7 +145,7 @@ jobs:
         tag: nightly
         name: Nightly Release
         body: "Latest nightly build of Enzyme-JAX."
-        artifacts: "bazel-bin/reactant-clang"
+        artifacts: "reactant-clang"
         allowUpdates: true
         removeArtifacts: true
         replacesArtifacts: true
