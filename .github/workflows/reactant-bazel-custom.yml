@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   build:
-    name: Reactant Build - ${{ matrix.os }}
+    name: Reactant CustomBazel Build - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
     strategy:
