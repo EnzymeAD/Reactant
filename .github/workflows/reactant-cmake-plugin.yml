@@ -7,24 +7,14 @@ on:
     branches:
     - main
     paths:
-      - '.github/workflows/enzyme-bazel.yml'
-      - 'enzyme/Enzyme/**'
-      - 'enzyme/include/**'
-      - 'enzyme/test/**'
-      - 'enzyme/tools/**'
-      - 'enzyme/CMakeLists.txt'
-      - 'enzyme/CMakePresets.json'
+      - '.github/workflows/reactant-cmake-plugin.yml'
+      - 'enzyme/**'
   pull_request:
     branches:
     - main
     paths:
-      - '.github/workflows/enzyme-bazel.yml'
-      - 'enzyme/Enzyme/**'
-      - 'enzyme/include/**'
-      - 'enzyme/test/**'
-      - 'enzyme/tools/**'
-      - 'enzyme/CMakeLists.txt'
-      - 'enzyme/CMakePresets.json'
+      - '.github/workflows/reactant-cmake-plugin.yml'
+      - 'enzyme/**'
   merge_group:
 
 concurrency:
@@ -35,7 +25,7 @@ concurrency:
 
 jobs:
   build:
-    name: Reactant Build - ${{ matrix.os }}
+    name: Reactant CMake Build - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
     strategy:
