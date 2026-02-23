@@ -13,3 +13,7 @@ enzyme/benchmarks/ReverseMode/*/results.json
 .cache
 CMakeUserPresets.json
 /out
+bazel-*
+*.pyc
+compile_commands.json
+.vscode/
