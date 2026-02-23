@@ -115,7 +115,7 @@ jobs:
     - name: Reactant C++ build
       working-directory: ${{ env.BASE_DIR }}/Reactant/enzyme
       run: |
-          bazel build $BAZEL_FLAGS --color=yes -c opt @llvm-project//clang:clang-linker-wrapper //:ClangReactantPlugin //:reactant-clang //:reactant-clang-resource @enzyme_ad//:libRaise.so --test_output=errors
+          bazel build $BAZEL_FLAGS --color=yes -c opt @llvm-project//clang:clang-linker-wrapper //:reactant-clang //:reactant-clang-resource --test_output=errors
 
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests

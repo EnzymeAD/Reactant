@@ -98,6 +98,14 @@
 #include "Enzyme/PreserveNVVM.h"
 #include "Enzyme/Utils.h"
 
+#ifndef REACTANT_USE_LINKED_RAISE
+#define REACTANT_USE_LINKED_RAISE 0
+#endif
+
+#if REACTANT_USE_LINKED_RAISE
+#include "src/enzyme_ad/jax/raise.h"
+#endif
+
 using namespace llvm;
 #ifdef DEBUG_TYPE
 #undef DEBUG_TYPE
@@ -735,6 +743,17 @@ public:
       GlobalOptPass().run(M, MAM);
     }
 
+    // read module
+    std::string MStr;
+    llvm::raw_string_ostream ss(MStr);
+    ss << M;
+
+#if REACTANT_USE_LINKED_RAISE 
+    auto newMod =
+        runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
+                               DeviceLibraries.getValue());
+#else
+    // load symbol and run pass
     auto lib = dlopen(Passes.c_str(), RTLD_LAZY | RTLD_DEEPBIND);
     if (!lib) {
       llvm::errs() << " could not open " << Passes.c_str() << " - " << dlerror()
@@ -746,40 +765,38 @@ public:
     }
     auto runLLVMToMLIRRoundTrip =
         (std::string(*)(std::string, std::string, std::string, std::string))sym;
-    if (runLLVMToMLIRRoundTrip) {
-      std::string MStr;
-      llvm::raw_string_ostream ss(MStr);
-      ss << M;
-      auto newMod =
-          runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
-                                 DeviceLibraries.getValue());
-      if (newMod.empty()) {
-        M.getContext().diagnose(DiagnosticInfoUnsupported(
-            *M.begin(), "Reactant: failed to run mlir passes"));
-        return changed;
-      }
-      M.dropAllReferences();
+    auto newMod =
+        runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
+                               DeviceLibraries.getValue());
+#endif
 
-      M.getGlobalList().clear();
-      M.getFunctionList().clear();
-      M.getAliasList().clear();
-      M.getIFuncList().clear();
-      M.getComdatSymbolTable().clear();
-
-      llvm::SMDiagnostic Err;
-      auto llvmModule = llvm::parseIR(
-          llvm::MemoryBufferRef(newMod, "conversion"), Err, M.getContext());
-
-      if (!llvmModule) {
-        llvm::errs() << " newMod: " << newMod << "\n";
-        Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
-        exit(1);
-      }
-      auto handler = M.getContext().getDiagnosticHandler();
-      Linker L(M);
-      L.linkInModule(std::move(llvmModule), Linker::Flags::OverrideFromSrc);
-      M.getContext().setDiagnosticHandler(std::move(handler));
+    if (newMod.empty()) {
+      M.getContext().diagnose(DiagnosticInfoUnsupported(
+          *M.begin(), "Reactant: failed to run mlir passes"));
+      return changed;
     }
+
+    M.dropAllReferences();
+
+    M.getGlobalList().clear();
+    M.getFunctionList().clear();
+    M.getAliasList().clear();
+    M.getIFuncList().clear();
+    M.getComdatSymbolTable().clear();
+
+    llvm::SMDiagnostic Err;
+    auto llvmModule = llvm::parseIR(
+        llvm::MemoryBufferRef(newMod, "conversion"), Err, M.getContext());
+
+    if (!llvmModule) {
+      llvm::errs() << " newMod: " << newMod << "\n";
+      Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
+      exit(1);
+    }
+    auto handler = M.getContext().getDiagnosticHandler();
+    Linker L(M);
+    L.linkInModule(std::move(llvmModule), Linker::Flags::OverrideFromSrc);
+    M.getContext().setDiagnosticHandler(std::move(handler));
     M.getContext().setDiscardValueNames(discard);
 
     return changed;

@@ -26,6 +26,7 @@ cc_library(
     ]) + ["Enzyme/Clang/bundled_includes.h"],
     copts = [
         "-DENZYME_RUNPASS=1",
+        "-DREACTANT_USE_LINKED_RAISE=1",
         "-DENZYME_VERSION_MAJOR=0",
         "-DENZYME_VERSION_MINOR=0",
         "-DENZYME_VERSION_PATCH=79",
@@ -39,6 +40,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "@enzyme//:EnzymePreserveNVVM",
+        "@enzyme_ad//:RaiseLib",
         ":bundled-includes",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
