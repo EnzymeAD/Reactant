@@ -128,7 +128,7 @@ jobs:
           cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build -DREACTANT_CLANG=ON
           ninja
 
-    - uses: bazel-contrib/setup-bazel@0.15.0
+    - uses: bazel-contrib/setup-bazel@0.18.0
       name: Set up Bazel
       with:
         # Avoid downloading Bazel every time.

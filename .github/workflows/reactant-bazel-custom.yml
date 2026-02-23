@@ -75,7 +75,7 @@ jobs:
         ls -lhrt "${BASE_DIR}"/Enzyme-GPU-Tests
         echo "BASE_DIR=${BASE_DIR}" >> ${GITHUB_ENV}
 
-    - uses: bazel-contrib/setup-bazel@0.15.0
+    - uses: bazel-contrib/setup-bazel@0.18.0
       name: Set up Bazel
       with:
         # Avoid downloading Bazel every time.
