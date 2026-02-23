@@ -8,26 +8,13 @@ on:
     - main
     paths:
       - '.github/workflows/enzyme-bazel-only.yml'
-      - 'enzyme/Enzyme/**'
-      - 'enzyme/include/**'
-      - 'enzyme/test/**'
-      - 'enzyme/tools/**'
-      - 'enzyme/BUILD'
-      - 'enzyme/WORKSPACE'
-      - 'enzyme/clang_resource_dir.bzl'
+      - 'enzyme/**'
   pull_request:
     branches:
     - main
     paths:
       - '.github/workflows/enzyme-bazel-only.yml'
-      - 'enzyme/Enzyme/**'
-      - 'enzyme/include/**'
-      - 'enzyme/test/**'
-      - 'enzyme/tools/**'
-      - 'enzyme/BUILD'
-      - 'enzyme/WORKSPACE'
-      - 'enzyme/clang_resource_dir.bzl'
-      - 'enzyme/run_lbm_bazel.py'
+      - 'enzyme/**'
   merge_group:
 
 concurrency:
