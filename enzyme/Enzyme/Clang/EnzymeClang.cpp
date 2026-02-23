@@ -35,6 +35,8 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 
+#include "llvm/ADT/StringRef.h"
+
 #include "Enzyme/Utils.h"
 
 #include "bundled_includes.h"
@@ -48,6 +50,8 @@ constexpr auto StructKind = clang::TagTypeKind::TTK_Struct;
 #endif
 
 extern llvm::cl::opt<std::string> ReactantBackend;
+extern llvm::cl::opt<std::string> Passes;
+extern llvm::cl::opt<std::string> DeviceLibraries;
 
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
@@ -64,9 +68,50 @@ llvm::errs() << " out file: " << CI.getFrontendOpts().OutputFile << "\n";
   bool ParseArgs(const clang::CompilerInstance &CI,
                  const std::vector<std::string> &args) override {
     llvm::errs() << " parse args action\n";
-   llvm::errs() << " pa: " << CI.getFrontendOpts().ProgramAction << "\n";
+    llvm::errs() << " pa: " << CI.getFrontendOpts().ProgramAction << "\n";
     llvm::errs() << " args:\n";
-for (auto a : args) llvm::errs() << "+ arg: " << a<<"\n"; 
+    static constexpr llvm::StringLiteral RaisePathPrefix = "raising-plugin-path=";
+    static constexpr llvm::StringLiteral BackendPrefix = "reactant-backend=";
+    static constexpr llvm::StringLiteral DeviceLibPrefix = "reactant-device-lib=";
+
+    for (const auto &arg : args) {
+      llvm::errs() << "+ arg: " << arg << "\n";
+      llvm::StringRef value(arg);
+
+      if (value.consume_front(RaisePathPrefix)) {
+        if (value.empty()) {
+          llvm::errs() << " warning: ignoring malformed plugin arg '" << arg
+                       << "' (missing value)\n";
+          continue;
+        }
+        Passes = value.str();
+        continue;
+      }
+
+      if (value.consume_front(BackendPrefix)) {
+        if (value.empty()) {
+          llvm::errs() << " warning: ignoring malformed plugin arg '" << arg
+                       << "' (missing value)\n";
+          continue;
+        }
+        ReactantBackend = value.str();
+        continue;
+      }
+
+      if (value.consume_front(DeviceLibPrefix)) {
+        if (value.empty()) {
+          llvm::errs() << " warning: ignoring malformed plugin arg '" << arg
+                       << "' (missing value)\n";
+          continue;
+        }
+        DeviceLibraries = value.str();
+        continue;
+      }
+
+      llvm::errs() << " warning: ignoring unknown plugin arg '" << arg
+                   << "'\n";
+    }
+
     return true;
   }
 
