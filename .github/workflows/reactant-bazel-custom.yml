@@ -141,3 +141,16 @@ jobs:
           export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd LBM
           make EMBEDDED_CLANG=yes -j
+
+    - name: Update Nightly Release
+      uses: ncipollo/release-action@v1
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+      with:
+        tag: nightly
+        name: Nightly Release
+        body: "Latest nightly build of Enzyme-JAX."
+        artifacts: "bazel-bin/reactant-clang"
+        allowUpdates: true
+        removeArtifacts: true
+        replacesArtifacts: true
+        token: ${{ secrets.GITHUB_TOKEN }}
