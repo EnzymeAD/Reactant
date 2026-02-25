@@ -35,7 +35,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 
-#include "../Utils.h"
+#include "Enzyme/Utils.h"
 
 #include "bundled_includes.h"
 
@@ -104,7 +104,7 @@ public:
      llvm::errs() << " enzyme plugin constructor\n";
     //FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
-    auto PluginName = "ClangEnzyme-" + std::to_string(LLVM_VERSION_MAJOR);
+    auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
     //bool contains = false;
 
     if (StringRef(ReactantBackend.getValue()).starts_with("xla")) {

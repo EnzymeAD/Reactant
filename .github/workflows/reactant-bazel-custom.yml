@@ -1,0 +1,152 @@
+name: Reactant Bazel (Custom Clang) 
+
+on:
+  schedule:
+    - cron: 0 0 * * *
+  push:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/reactant-bazel-custom.yml'
+      - 'enzyme/**'
+  pull_request:
+    branches:
+    - main
+    paths:
+      - '.github/workflows/reactant-bazel-custom.yml'
+      - 'enzyme/**'
+  merge_group:
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build:
+    name: Reactant CustomBazel Build - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ["Release"] # "RelWithDebInfo"
+        llbuild: ["Release"]
+        os: [linux-x86-n2-32]
+
+    timeout-minutes: 500
+
+    container:
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:d1ef9dda4ae609152f96ff0bf1e3ddec62c2969a020fed96f72daf1908bc5f34' ) || '' }}
+
+    steps:
+    - name: Install dependencies
+      run: |
+          apt-get update
+          apt-get install -y binutils ninja-build cmake gcc g++ python3 python3-dev gnupg ca-certificates opencl-headers ocl-icd-opencl-dev tmux
+          curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64 /" > /etc/apt/sources.list.d/cuda.list
+          apt-get update
+          apt-get install -y cuda-toolkit-12-9
+          ln -sf /usr/local/cuda-12.9 /usr/local/cuda
+
+    - name: Check out Reactant
+      uses: actions/checkout@v6
+      with:
+        path: 'Reactant'
+
+    - name: Check out Enzyme GPU Tests
+      uses: actions/checkout@v6
+      with:
+        repository: 'wsmoses/Enzyme-GPU-Tests'
+        path: 'Enzyme-GPU-Tests'
+        ref: 'mlir'
+
+
+    - name: Set BASE_DIR
+      # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
+      # is terrible and the two don't match inside containers:
+      # https://github.com/actions/runner/issues/2058
+      run: |
+        BASE_DIR=${GITHUB_WORKSPACE}
+        # Make sure this directory exists, for good measure
+        ls -lhrt "${BASE_DIR}"/Reactant
+        ls -lhrt "${BASE_DIR}"/Enzyme-GPU-Tests
+        echo "BASE_DIR=${BASE_DIR}" >> ${GITHUB_ENV}
+
+    - uses: bazel-contrib/setup-bazel@0.18.0
+      name: Set up Bazel
+      with:
+        # Avoid downloading Bazel every time.
+        bazelisk-cache: true
+        # Store build cache per workflow.
+        disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+        # Share repository cache between workflows.
+        repository-cache: true
+        bazelisk-version: 1.x
+
+    - name: Set BAZEL_FLAGS
+      shell: bash
+      run: |
+        BAZEL_FLAGS=(
+            --linkopt=-fuse-ld=lld
+            --test_env=TPU_TOPOLOGY
+            --test_env=TPU_WORKER_ID
+            --test_env=TPU_SKIP_MDS_QUERY=true
+            --test_env=TPU_TOPOLOGY_WRAP
+            --test_env=TPU_CHIPS_PER_HOST_BOUNDS
+            --test_env=TPU_ACCELERATOR_TYPE
+            --test_env=TPU_RUNTIME_METRICS_PORTS
+            --test_env=TPU_TOPOLOGY_ALT
+            --test_env=TPU_HOST_BOUNDS
+            --test_env=TPU_WORKER_HOSTNAMES
+            --test_env=CHIPS_PER_HOST_BOUNDS
+            --test_env=HOST_BOUNDS
+            --test_env=ALT=false
+            --test_env=WRAP
+            --test_env=VBAR_CONTROL_SERVICE_URL
+            --repo_env=CC=$(which clang)
+            --define=using_clang=true
+            --config=public_cache_push
+        )
+        echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
+
+    - name: Reactant C++ build
+      working-directory: ${{ env.BASE_DIR }}/Reactant/enzyme
+      run: |
+          bazel build $BAZEL_FLAGS --color=yes -c opt @llvm-project//clang:clang-linker-wrapper //:reactant-clang //:reactant-clang-resource --test_output=errors
+
+    - name: LBM build
+      working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
+      env:
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangReactant-23.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
+          CUDA_PATH: /usr/local/cuda
+      run: |
+          export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
+          cd LBM
+          make EMBEDDED_CLANG=yes -j
+
+    - name: Prepare for export
+      env:
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangReactant-23.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
+          CUDA_PATH: /usr/local/cuda
+      run: |
+          cp ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang reactant-clang
+
+    - name: Update Nightly Release
+      uses: ncipollo/release-action@v1
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+      with:
+        tag: nightly
+        name: Nightly Release
+        body: "Latest nightly build of Enzyme-JAX."
+        artifacts: "reactant-clang"
+        allowUpdates: true
+        removeArtifacts: true
+        replacesArtifacts: true
+        token: ${{ secrets.GITHUB_TOKEN }}
