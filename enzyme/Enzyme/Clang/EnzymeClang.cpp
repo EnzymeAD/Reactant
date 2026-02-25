@@ -476,6 +476,64 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
     X4("enzyme_function_like", "");
 
+struct TesseraOpAttrInfo : public ParsedAttrInfo {
+  TesseraOpAttrInfo() {
+    OptArgs = 1;
+    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
+    // [[plugin::example]] supported.
+    static constexpr Spelling S[] = {
+      {ParsedAttr::AS_GNU, "tessera_op"},
+#if LLVM_VERSION_MAJOR > 17
+      {ParsedAttr::AS_C23, "tessera_op"},
+#else
+      {ParsedAttr::AS_C2x, "tessera_op"},
+#endif
+      {ParsedAttr::AS_CXX11, "tessera_op"},
+      {ParsedAttr::AS_CXX11, "tessera::op"}
+    };
+    Spellings = S;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    if (Attr.getNumArgs() != 1) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'tessera_op' attribute requires a single string argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+    if (!Literal) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error, "first argument to 'tessera_op' "
+                                    "attribute must be a string literal");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    D->addAttr(AnnotateAttr::Create(
+        S.Context, ("tessera_op=" + Literal->getString()).str(),
+        nullptr, 0, Attr.getRange()));
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo>
+    T1("tessera_op", "");
+
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
     OptArgs = 1;
