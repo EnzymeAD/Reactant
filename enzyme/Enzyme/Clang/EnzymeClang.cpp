@@ -31,6 +31,8 @@
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/LexDiagnostic.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
@@ -48,6 +50,8 @@ constexpr auto StructKind = clang::TagTypeKind::TTK_Struct;
 #endif
 
 extern llvm::cl::opt<std::string> ReactantBackend;
+
+std::vector<std::string> GlobalOptimizationRules;
 
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
@@ -74,6 +78,27 @@ for (auto a : args) llvm::errs() << "+ arg: " << a<<"\n";
     return AddBeforeMainAction;
   }
 };
+
+static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc;
+  DeclContext *declCtx = AST.getTranslationUnitDecl();
+
+  // create global variable for each optimization string
+  for (int i = 0; i < Rules.size(); i++) {
+    auto &Id = AST.Idents.get("__tessera_optimize_rule_" + std::to_string(i));
+    auto VD = VarDecl::Create(AST, declCtx, loc, loc, &Id, AST.IntTy, nullptr,
+                              SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(
+        IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
+    VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+    VD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, ("tessera_optimize=" + Rules[i]).c_str(), nullptr, 0));
+    declCtx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
 
 void MakeGlobalOfFn(FunctionDecl *FD, CompilerInstance &CI) {
   // if (FD->isLateTemplateParsed()) return;
@@ -184,6 +209,12 @@ public:
     CI.getPreprocessor().getHeaderSearchInfo().AddSearchPath(DL,
                                                              /*isAngled=*/true);
   }
+
+  void HandleTranslationUnit(ASTContext &Context) override {
+    Sema &S = CI.getSema();
+    emitOptimizationRules(S, GlobalOptimizationRules);
+  }
+
   ~EnzymePlugin() {}
 };
 
@@ -882,6 +913,34 @@ struct EnzymeSparseAccumulateAttrInfo : public ParsedAttrInfo {
 
 static ParsedAttrInfoRegistry::Add<EnzymeSparseAccumulateAttrInfo>
     SparseX("enzyme_sparse_accumulate", "");
+
+// #pragma optimize "expression1 -> expression2"
+class PragmaTesseraOptimizeHandler : public PragmaHandler {
+public:
+  PragmaTesseraOptimizeHandler() : PragmaHandler("optimize") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::string_literal)) {
+      PP.Diag(Tok.getLocation(), diag::err_expected) << tok::string_literal;
+      return;
+    }
+
+    std::string OptimizationRule;
+    if (!PP.FinishLexStringLiteral(Tok, OptimizationRule, "pragma optimize",
+                                   /*AllowMacroExpansion=*/false))
+      return;
+    if (Tok.isNot(tok::eod)) {
+      PP.Diag(Tok, diag::ext_pp_extra_tokens_at_eol)
+          << "pragma optimize warning";
+      return;
+    }
+    GlobalOptimizationRules.push_back(OptimizationRule);
+  }
+};
+
+static PragmaHandlerRegistry::Add<PragmaTesseraOptimizeHandler>
+    OptX("optimize", "custom tessera optimization");
 } // namespace
 
 #endif
