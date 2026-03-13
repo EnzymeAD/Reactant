@@ -330,6 +330,7 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
   }
 };
 
+
 static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutEnableAttrInfo>
     X2("enzyme_mincut_enable", "");
 
