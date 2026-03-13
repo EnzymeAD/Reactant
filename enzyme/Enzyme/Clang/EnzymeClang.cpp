@@ -59,9 +59,6 @@ protected:
   std::unique_ptr<clang::ASTConsumer>
   CreateASTConsumer(clang::CompilerInstance &CI,
                     llvm::StringRef InFile) override {
-llvm::errs() << " create consumer\n";
-llvm::errs() << " is device: " << CI.getLangOpts().CUDAIsDevice << "\n";
-llvm::errs() << " out file: " << CI.getFrontendOpts().OutputFile << "\n";
     return std::unique_ptr<clang::ASTConsumer>(new ConsumerType(CI));
   }
 
