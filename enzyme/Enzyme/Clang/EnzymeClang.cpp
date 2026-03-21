@@ -122,8 +122,6 @@ class EnzymePlugin final : public clang::ASTConsumer {
 
 public:
   EnzymePlugin(clang::CompilerInstance &CI) : CI(CI) {
-
-     llvm::errs() << " enzyme plugin constructor\n";
     //FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
     auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
