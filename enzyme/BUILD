@@ -79,6 +79,19 @@ expand_template(
 )
 
 cc_binary(
+    name = "reactant-opt",
+    srcs = ["reactant-opt-driver.cpp"],
+    deps = [
+        ":ReactantStatic",
+        "@llvm-project//llvm:AllTargetsAsmParsers",
+        "@llvm-project//llvm:AllTargetsCodeGens",
+        "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:Passes",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_binary(
     name = "reactant-clang",
     srcs = ["reactant-clang-driver.cpp"],
     copts = [
