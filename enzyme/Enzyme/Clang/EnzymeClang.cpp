@@ -72,7 +72,7 @@ for (auto a : args) llvm::errs() << "+ arg: " << a<<"\n";
   }
 
   PluginASTAction::ActionType getActionType() override {
-    return AddBeforeMainAction;
+    return CmdlineBeforeMainAction;
   }
 };
 
@@ -122,6 +122,11 @@ class EnzymePlugin final : public clang::ASTConsumer {
 
 public:
   EnzymePlugin(clang::CompilerInstance &CI) : CI(CI) {
+    llvm::errs() << "EnzymePlugin start \n";
+    if (getenv("NO_REACTANT_PLUGIN")){
+      llvm::errs() << "No registering of plugin - returning\n";
+      return;
+    }
     //FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
     auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
@@ -133,29 +138,29 @@ public:
     std::string inFile;
     for (auto in : CI.getFrontendOpts().Inputs) {
     	if (in.isFile()) {
-	 inFile = in.getFile().str();
-      llvm::errs() << " in: " << in.getFile() << "\n";
-	}
+        inFile = in.getFile().str();
+        llvm::errs() << " in: " << in.getFile() << "\n";
+	    }
     }
     if (CI.getLangOpts().CUDAIsDevice) {
 	    std::string file = CI.getFrontendOpts().OutputFile;
 	    file = inFile;
       CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder & PB) {
-	registerExporter(PB, file);
+          registerExporter(PB, file);
       });
     } else {
-	std::vector<std::string> gpubins;
-	if (CGOpts.CudaGpuBinaryFileName.size()) {
-	  if (inFile.size())
-	    gpubins.push_back(inFile);
-	  //gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
-	}
-        std::string file = CI.getFrontendOpts().OutputFile;
-        CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
-          registerReactant(PB, gpubins, file);
-        });
+      std::vector<std::string> gpubins;
+      if (CGOpts.CudaGpuBinaryFileName.size()) {
+        if (inFile.size())
+          gpubins.push_back(inFile);
+        //gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
+      }
+            std::string file = CI.getFrontendOpts().OutputFile;
+            CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
+              registerReactant(PB, gpubins, file);
+            });
     }
-
+        
     CI.getPreprocessorOpts().Includes.push_back("/enzyme/enzyme/version");
 
     std::string PredefineBuffer;
