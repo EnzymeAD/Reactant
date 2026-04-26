@@ -505,7 +505,7 @@ static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
 
 struct TesseraOpAttrInfo : public ParsedAttrInfo {
   TesseraOpAttrInfo() {
-    OptArgs = 1;
+    OptArgs = 15;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
@@ -534,13 +534,15 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleDeclAttribute(Sema &S, Decl *D,
                                    const ParsedAttr &Attr) const override {
-    if (Attr.getNumArgs() != 1) {
+    if (Attr.getNumArgs() < 1) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
           DiagnosticsEngine::Error,
-          "'tessera_op' attribute requires a single string argument");
+          "'tessera_op' attribute requires at least a string argument");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
     }
+
+    // Parse the first arg as the op string
     auto *Arg0 = Attr.getArgAsExpr(0);
     StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
     if (!Literal) {
@@ -551,8 +553,25 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     }
 
+    // Build annotation string: "tessera_op=eigen.inv(x:byref, y):xsize,ysize"
+    std::string annotation = ("tessera_op=" + Literal->getString()).str();
+
+    // Parse remaining args representing sizes of function parameters
+    for (unsigned i = 1; i < Attr.getNumArgs(); i++) {
+      auto *SizeArg = Attr.getArgAsExpr(i);
+      Expr::EvalResult result;
+      if (!SizeArg->EvaluateAsInt(result, S.Context)) {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+	    DiagnosticsEngine::Error, "argument %0 to 'tessera_op' attribute "
+	                              "must be an integer constant");
+	S.Diag(Attr.getLoc(), ID) << i;
+	return AttributeNotApplied;
+      }
+      annotation += (i == 1 ? ":" : ",") + std::to_string(result.Val.getInt().getLimitedValue());
+    }
+
     D->addAttr(AnnotateAttr::Create(
-        S.Context, ("tessera_op=" + Literal->getString()).str(),
+        S.Context, annotation,
         nullptr, 0, Attr.getRange()));
     return AttributeApplied;
   }
@@ -560,6 +579,83 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
 
 static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo>
     T1("tessera_op", "");
+
+struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
+  PureTesseraOpAttrInfo() {
+    OptArgs = 15;
+    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
+    // [[plugin::example]] supported.
+    static constexpr Spelling S[] = {
+      {ParsedAttr::AS_GNU, "pure_tessera_op"},
+#if LLVM_VERSION_MAJOR > 17
+      {ParsedAttr::AS_C23, "pure_tessera_op"},
+#else
+      {ParsedAttr::AS_C2x, "pure_tessera_op"},
+#endif
+      {ParsedAttr::AS_CXX11, "pure_tessera_op"},
+      {ParsedAttr::AS_CXX11, "tessera::pure_op"}
+    };
+    Spellings = S;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    if (Attr.getNumArgs() < 1) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'pure_tessera_op' attribute requires at least a string argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    // Parse the first arg as the op string
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+    if (!Literal) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error, "first argument to 'pure_tessera_op' "
+                                    "attribute must be a string literal");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    // Build annotation string: "pure_tessera_op=eigen.inv(x:byref, y):xsize,ysize"
+    std::string annotation = ("pure_tessera_op=" + Literal->getString()).str();
+
+    // Parse remaining args representing sizes of function parameters
+    for (unsigned i = 1; i < Attr.getNumArgs(); i++) {
+      auto *SizeArg = Attr.getArgAsExpr(i);
+      Expr::EvalResult result;
+      if (!SizeArg->EvaluateAsInt(result, S.Context)) {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+	    DiagnosticsEngine::Error, "argument %0 to 'pure_tessera_op' attribute "
+	                              "must be an integer constant");
+	S.Diag(Attr.getLoc(), ID) << i;
+	return AttributeNotApplied;
+      }
+      annotation += (i == 1 ? ":" : ",") + std::to_string(result.Val.getInt().getLimitedValue());
+    }
+
+    D->addAttr(AnnotateAttr::Create(
+        S.Context, annotation,
+        nullptr, 0, Attr.getRange()));
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo>
+    T2("pure_tessera_op", "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
