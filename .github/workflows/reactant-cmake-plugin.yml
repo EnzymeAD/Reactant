@@ -61,7 +61,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         repository: 'llvm/llvm-project'
-        ref: 'c6bb1afbc5086c3f483921c575262bd95c346e5b'
+        ref: '87d42c13cd6b119240781f31e5869981d500a186'
         path: 'llvm-project'
 
     - name: Check out Enzyme-JAX
