@@ -95,6 +95,7 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Analysis/PostDominators.h"
 
+#include "Enzyme/PassUtils.h"
 #include "Enzyme/PreserveNVVM.h"
 #include "Enzyme/Utils.h"
 
@@ -811,8 +812,8 @@ public:
 #include "llvm/Plugins/PassPlugin.h"
 
 class ReactantNewPM final : public ReactantBase,
-                            public AnalysisInfoMixin<ReactantNewPM> {
-  friend struct llvm::AnalysisInfoMixin<ReactantNewPM>;
+                            public PassParent<ReactantNewPM> {
+  friend PassParent<ReactantNewPM>;
 
 private:
   static llvm::AnalysisKey Key;
@@ -830,8 +831,8 @@ public:
   static bool isRequired() { return true; }
 };
 
-class ExporterNewPM final : public AnalysisInfoMixin<ExporterNewPM> {
-  friend struct llvm::AnalysisInfoMixin<ExporterNewPM>;
+class ExporterNewPM final : public PassParent<ExporterNewPM> {
+  friend PassParent<ExporterNewPM>;
 
 private:
   static llvm::AnalysisKey Key;
