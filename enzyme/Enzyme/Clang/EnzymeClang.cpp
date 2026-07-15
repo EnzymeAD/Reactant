@@ -218,7 +218,7 @@ public:
 static clang::FrontendPluginRegistry::Add<EnzymeAction<EnzymePlugin>>
     X("enzyme", "Enzyme Plugin");
 
-#if 1 || LLVM_VERSION_MAJOR > 10
+#if LLVM_VERSION_MAJOR > 10
 namespace {
 
 static bool ExpectForStatement(Sema &S, const ParsedAttr &Attr,
