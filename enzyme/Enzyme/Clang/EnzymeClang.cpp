@@ -55,6 +55,14 @@ extern llvm::cl::opt<std::string> ReactantBackend;
 
 std::vector<std::string> GlobalOptimizationRules;
 
+struct ByrefGlobalInfo {
+  unsigned idx;
+  QualType type;
+  SourceLocation loc;
+};
+
+static std::vector<ByrefGlobalInfo> ByrefGlobals;
+
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
 protected:
@@ -85,7 +93,7 @@ static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
   DeclContext *declCtx = AST.getTranslationUnitDecl();
 
   // create global variable for each optimization string
-  for (int i = 0; i < Rules.size(); i++) {
+  for (size_t i = 0, e = Rules.size(); i != e; ++i) {
     auto &Id = AST.Idents.get("__tessera_optimize_rule_" + std::to_string(i));
     auto VD = VarDecl::Create(AST, declCtx, loc, loc, &Id, AST.IntTy, nullptr,
                               SC_Static);
@@ -95,6 +103,22 @@ static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
     VD->addAttr(AnnotateAttr::CreateImplicit(
         AST, ("tessera_optimize=" + Rules[i]).c_str(), nullptr, 0));
+    declCtx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
+
+static void emitByrefGlobals(Sema &S, std::vector<ByrefGlobalInfo> &Globals) {
+  auto &AST = S.getASTContext();
+  DeclContext *declCtx = AST.getTranslationUnitDecl();
+  for (auto &info : Globals) {
+    auto &Id =
+        AST.Idents.get("__tessera_byref_arg_type_" + std::to_string(info.idx));
+    auto *VD = VarDecl::Create(AST, declCtx, info.loc, info.loc, &Id, info.type,
+                               nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(new (AST) ImplicitValueInitExpr(info.type));
+    VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
     declCtx->addDecl(VD);
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
   }
@@ -205,13 +229,13 @@ public:
     CI.getPreprocessor().getHeaderSearchInfo().AddSearchPath(DL,
                                                              /*isAngled=*/true);
   }
+  ~EnzymePlugin() {}
 
   void HandleTranslationUnit(ASTContext &Context) override {
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
+    emitByrefGlobals(S, ByrefGlobals);
   }
-
-  ~EnzymePlugin() {}
 };
 
 // register the PluginASTAction in the registry.
@@ -563,9 +587,85 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
     X4("enzyme_function_like", "");
 
+static ParsedAttrInfo::AttrHandling
+handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
+                         StringRef attrName) {
+  if (Attr.getNumArgs() < 1) {
+    unsigned ID = S.getDiagnostics().getCustomDiagID(
+        DiagnosticsEngine::Error,
+        "'%0' attribute requires at least a string argument");
+    S.Diag(Attr.getLoc(), ID) << attrName;
+    return ParsedAttrInfo::AttributeNotApplied;
+  }
+
+  // Parse the first arg as the op string
+  auto *Arg0 = Attr.getArgAsExpr(0);
+  StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+  if (!Literal) {
+    unsigned ID = S.getDiagnostics().getCustomDiagID(
+        DiagnosticsEngine::Error, "first argument to '%0' "
+                                  "attribute must be a string literal");
+    S.Diag(Attr.getLoc(), ID) << attrName;
+    return ParsedAttrInfo::AttributeNotApplied;
+  }
+
+  // Scan for byref positions
+  StringRef opStr = Literal->getString();
+  StringRef argList = opStr.slice(opStr.find('(') + 1, opStr.find(')'));
+  SmallVector<unsigned> byrefPositions;
+  if (!argList.trim().empty()) {
+    SmallVector<StringRef> argParts;
+    argList.split(argParts, ',');
+    for (auto [idx, arg] : llvm::enumerate(argParts)) {
+      arg = arg.trim();
+      if (arg.contains(":byref") || arg.contains(": byref"))
+        byrefPositions.push_back(idx);
+    }
+  }
+
+  // Emit a global for each byref parameter
+  auto FD = cast<FunctionDecl>(D);
+  DeclContext *declCtx = D->getDeclContext();
+  for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
+    if (tmpCtx->isRecord()) {
+      declCtx = tmpCtx->getParent();
+    }
+  }
+  auto params = FD->parameters();
+  auto loc = FD->getLocation();
+
+  static unsigned globalCounter = 0;
+  SmallVector<unsigned> byrefGlobalIndices;
+
+  for (unsigned idx : byrefPositions) {
+    if (idx >= params.size())
+      continue;
+    auto *param = params[idx];
+    auto pointeeTy = param->getType();
+    if (pointeeTy->isPointerType() || pointeeTy->isReferenceType())
+      pointeeTy = (pointeeTy->getPointeeType());
+
+    unsigned thisIdx = globalCounter++;
+    byrefGlobalIndices.push_back(thisIdx);
+    ByrefGlobals.push_back({thisIdx, pointeeTy, loc});
+  }
+
+  // Build annotation string: "tessera_op=eigen.inv(x:byref, y):3,4"
+  std::string annotation = (attrName + "=" + opStr).str();
+
+  // Parse remaining args representing sizes of function parameters
+  for (auto [i, idx] : llvm::enumerate(byrefGlobalIndices)) {
+    annotation += (i == 0 ? ":globals=" : ",") + std::to_string(idx);
+  }
+
+  D->addAttr(
+      AnnotateAttr::Create(S.Context, annotation, nullptr, 0, Attr.getRange()));
+  return ParsedAttrInfo::AttributeApplied;
+}
+
 struct TesseraOpAttrInfo : public ParsedAttrInfo {
   TesseraOpAttrInfo() {
-    OptArgs = 1;
+    OptArgs = 15;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "tessera_op"},
@@ -592,31 +692,49 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleDeclAttribute(Sema &S, Decl *D,
                                    const ParsedAttr &Attr) const override {
-    if (Attr.getNumArgs() != 1) {
-      unsigned ID = S.getDiagnostics().getCustomDiagID(
-          DiagnosticsEngine::Error,
-          "'tessera_op' attribute requires a single string argument");
-      S.Diag(Attr.getLoc(), ID);
-      return AttributeNotApplied;
-    }
-    auto *Arg0 = Attr.getArgAsExpr(0);
-    StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
-    if (!Literal) {
-      unsigned ID = S.getDiagnostics().getCustomDiagID(
-          DiagnosticsEngine::Error, "first argument to 'tessera_op' "
-                                    "attribute must be a string literal");
-      S.Diag(Attr.getLoc(), ID);
-      return AttributeNotApplied;
-    }
-
-    D->addAttr(AnnotateAttr::Create(
-        S.Context, ("tessera_op=" + Literal->getString()).str(), nullptr, 0,
-        Attr.getRange()));
-    return AttributeApplied;
+    return handleTesseraOpAttribute(S, D, Attr, "tessera_op");
   }
 };
 
 static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo> T1("tessera_op", "");
+
+struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
+  PureTesseraOpAttrInfo() {
+    OptArgs = 15;
+    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
+    // [[plugin::example]] supported.
+    static constexpr Spelling S[] = {
+      {ParsedAttr::AS_GNU, "pure_tessera_op"},
+#if LLVM_VERSION_MAJOR > 17
+      {ParsedAttr::AS_C23, "pure_tessera_op"},
+#else
+      {ParsedAttr::AS_C2x, "pure_tessera_op"},
+#endif
+      {ParsedAttr::AS_CXX11, "pure_tessera_op"},
+      {ParsedAttr::AS_CXX11, "tessera::pure_op"}
+    };
+    Spellings = S;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    return handleTesseraOpAttribute(S, D, Attr, "pure_tessera_op");
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo>
+    T2("pure_tessera_op", "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {

@@ -72,6 +72,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/IOSandbox.h"
 #include "llvm/Transforms/Scalar.h"
 
 #include "llvm/Analysis/BasicAliasAnalysis.h"
@@ -530,6 +531,7 @@ public:
 
     for (auto bin : gpubins) {
       SMDiagnostic Err;
+      auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
       auto mod2 = llvm::parseIRFile(bin + ".re_export", Err, M.getContext());
       if (!mod2) {
         Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
@@ -885,6 +887,8 @@ public:
 
   Result run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM) {
     std::string filename = firstfile + ".re_export";
+
+    auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
 
     std::error_code EC;
     llvm::raw_fd_ostream file(filename, EC); //, llvm::sys::fs::OF_Text);
