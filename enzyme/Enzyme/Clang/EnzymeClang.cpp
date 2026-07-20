@@ -331,15 +331,14 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_GNU, "enzyme_mincut_enable"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_C23, "enzyme_mincut_enable"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_C2x, "enzyme_mincut_enable"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_mincut_enable"},
-      {ParsedAttr::AS_CXX11, "enzyme::mincut_enable"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_CXX11, "enzyme::mincut_enable"}};
     Spellings = S;
   }
 
@@ -372,15 +371,14 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_checkpointing_enable"},
+        {ParsedAttr::AS_GNU, "enzyme_checkpointing_enable"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_checkpointing_enable"},
+        {ParsedAttr::AS_C23, "enzyme_checkpointing_enable"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_checkpointing_enable"},
+        {ParsedAttr::AS_C2x, "enzyme_checkpointing_enable"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_checkpointing_enable"},
-      {ParsedAttr::AS_CXX11, "enzyme::checkpointing_enable"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_checkpointing_enable"},
+        {ParsedAttr::AS_CXX11, "enzyme::checkpointing_enable"}};
     Spellings = S;
   }
 
@@ -465,15 +463,14 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_function_like"},
+        {ParsedAttr::AS_GNU, "enzyme_function_like"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_function_like"},
+        {ParsedAttr::AS_C23, "enzyme_function_like"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_function_like"},
+        {ParsedAttr::AS_C2x, "enzyme_function_like"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_function_like"},
-      {ParsedAttr::AS_CXX11, "enzyme::function_like"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_function_like"},
+        {ParsedAttr::AS_CXX11, "enzyme::function_like"}};
     Spellings = S;
   }
 
@@ -671,16 +668,14 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
     OptArgs = 15;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "tessera_op"},
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "tessera_op"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "tessera_op"},
+                                     {ParsedAttr::AS_C23, "tessera_op"},
 #else
-      {ParsedAttr::AS_C2x, "tessera_op"},
+                                     {ParsedAttr::AS_C2x, "tessera_op"},
 #endif
-      {ParsedAttr::AS_CXX11, "tessera_op"},
-      {ParsedAttr::AS_CXX11, "tessera::op"}
-    };
+                                     {ParsedAttr::AS_CXX11, "tessera_op"},
+                                     {ParsedAttr::AS_CXX11, "tessera::op"}};
     Spellings = S;
   }
 
@@ -709,15 +704,14 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "pure_tessera_op"},
+        {ParsedAttr::AS_GNU, "pure_tessera_op"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "pure_tessera_op"},
+        {ParsedAttr::AS_C23, "pure_tessera_op"},
 #else
-      {ParsedAttr::AS_C2x, "pure_tessera_op"},
+        {ParsedAttr::AS_C2x, "pure_tessera_op"},
 #endif
-      {ParsedAttr::AS_CXX11, "pure_tessera_op"},
-      {ParsedAttr::AS_CXX11, "tessera::pure_op"}
-    };
+        {ParsedAttr::AS_CXX11, "pure_tessera_op"},
+        {ParsedAttr::AS_CXX11, "tessera::pure_op"}};
     Spellings = S;
   }
 
@@ -738,22 +732,21 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo>
-    T2("pure_tessera_op", "");
+static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
+                                                             "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
     OptArgs = 1;
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_GNU, "enzyme_shouldrecompute"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_C23, "enzyme_shouldrecompute"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_C2x, "enzyme_shouldrecompute"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_shouldrecompute"},
-      {ParsedAttr::AS_CXX11, "enzyme::shouldrecompute"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_CXX11, "enzyme::shouldrecompute"}};
     Spellings = S;
   }
 
@@ -795,15 +788,14 @@ struct EnzymeInactiveAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_inactive"},
+        {ParsedAttr::AS_GNU, "enzyme_inactive"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_inactive"},
+        {ParsedAttr::AS_C23, "enzyme_inactive"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_inactive"},
+        {ParsedAttr::AS_C2x, "enzyme_inactive"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_inactive"},
-      {ParsedAttr::AS_CXX11, "enzyme::inactive"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_inactive"},
+        {ParsedAttr::AS_CXX11, "enzyme::inactive"}};
     Spellings = S;
   }
 
@@ -899,16 +891,14 @@ struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
     OptArgs = 1;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_nofree"},
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "enzyme_nofree"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_nofree"},
+                                     {ParsedAttr::AS_C23, "enzyme_nofree"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_nofree"},
+                                     {ParsedAttr::AS_C2x, "enzyme_nofree"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_nofree"},
-      {ParsedAttr::AS_CXX11, "enzyme::nofree"}
-    };
+                                     {ParsedAttr::AS_CXX11, "enzyme_nofree"},
+                                     {ParsedAttr::AS_CXX11, "enzyme::nofree"}};
     Spellings = S;
   }
 
@@ -1004,15 +994,14 @@ struct EnzymeSparseAccumulateAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_GNU, "enzyme_sparse_accumulate"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_C23, "enzyme_sparse_accumulate"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_C2x, "enzyme_sparse_accumulate"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_sparse_accumulate"},
-      {ParsedAttr::AS_CXX11, "enzyme::sparse_accumulate"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_CXX11, "enzyme::sparse_accumulate"}};
     Spellings = S;
   }
 
