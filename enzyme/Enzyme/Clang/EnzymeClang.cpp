@@ -22,6 +22,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <limits>
+
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -73,9 +75,10 @@ protected:
   bool ParseArgs(const clang::CompilerInstance &CI,
                  const std::vector<std::string> &args) override {
     llvm::errs() << " parse args action\n";
-   llvm::errs() << " pa: " << CI.getFrontendOpts().ProgramAction << "\n";
+    llvm::errs() << " pa: " << CI.getFrontendOpts().ProgramAction << "\n";
     llvm::errs() << " args:\n";
-for (auto a : args) llvm::errs() << "+ arg: " << a<<"\n"; 
+    for (auto a : args)
+      llvm::errs() << "+ arg: " << a << "\n";
     return true;
   }
 
@@ -146,38 +149,36 @@ class EnzymePlugin final : public clang::ASTConsumer {
 
 public:
   EnzymePlugin(clang::CompilerInstance &CI) : CI(CI) {
-    //FrontendOptions &Opts = CI.getFrontendOpts();
+    // FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
     auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
-    //bool contains = false;
+    // bool contains = false;
 
     if (StringRef(ReactantBackend.getValue()).starts_with("xla")) {
       llvm::errs() << " note: you need to add -lReactantExtra\n";
     }
     std::string inFile;
     for (auto in : CI.getFrontendOpts().Inputs) {
-    	if (in.isFile()) {
-	 inFile = in.getFile().str();
-      llvm::errs() << " in: " << in.getFile() << "\n";
-	}
+      if (in.isFile()) {
+        inFile = in.getFile().str();
+        llvm::errs() << " in: " << in.getFile() << "\n";
+      }
     }
     if (CI.getLangOpts().CUDAIsDevice) {
-	    std::string file = CI.getFrontendOpts().OutputFile;
-	    file = inFile;
-      CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder & PB) {
-	registerExporter(PB, file);
-      });
+      std::string file = CI.getFrontendOpts().OutputFile;
+      file = inFile;
+      CGOpts.PassBuilderCallbacks.push_back(
+          [=](llvm::PassBuilder &PB) { registerExporter(PB, file); });
     } else {
-	std::vector<std::string> gpubins;
-	if (CGOpts.CudaGpuBinaryFileName.size()) {
-	  if (inFile.size())
-	    gpubins.push_back(inFile);
-	  //gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
-	}
-        std::string file = CI.getFrontendOpts().OutputFile;
-        CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
-          registerReactant(PB, gpubins, file);
-        });
+      std::vector<std::string> gpubins;
+      if (CGOpts.CudaGpuBinaryFileName.size()) {
+        if (inFile.size())
+          gpubins.push_back(inFile);
+        // gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
+      }
+      std::string file = CI.getFrontendOpts().OutputFile;
+      CGOpts.PassBuilderCallbacks.push_back(
+          [=](llvm::PassBuilder &PB) { registerReactant(PB, gpubins, file); });
     }
 
     CI.getPreprocessorOpts().Includes.push_back("/enzyme/enzyme/version");
@@ -244,7 +245,8 @@ static clang::FrontendPluginRegistry::Add<EnzymeAction<EnzymePlugin>>
 #if LLVM_VERSION_MAJOR > 10
 namespace {
 
-static bool ExpectForStatement(Sema &S, const ParsedAttr &Attr, const Stmt *St) {
+static bool ExpectForStatement(Sema &S, const ParsedAttr &Attr,
+                               const Stmt *St) {
   if (!isa<ForStmt>(St)) {
     S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type)
         << Attr << Attr.isRegularKeywordAttribute() << ExpectedForLoopStatement;
@@ -254,7 +256,7 @@ static bool ExpectForStatement(Sema &S, const ParsedAttr &Attr, const Stmt *St) 
 }
 
 static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
-                             bool argValue) {
+                             llvm::ArrayRef<uint64_t> argValues) {
   auto &AST = S.getASTContext();
   SourceLocation loc;
 
@@ -268,8 +270,8 @@ static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
   // create global variable at translation unit level
   auto &Id = AST.Idents.get(FunctionName);
 
-  auto FunctionType =
-      AST.getFunctionType(AST.VoidTy, {AST.getNSUIntegerType()}, {});
+  std::vector<QualType> ParamTypes(argValues.size(), AST.getNSUIntegerType());
+  auto FunctionType = AST.getFunctionType(AST.VoidTy, ParamTypes, {});
 
   DeclarationName name(&Id);
   DeclarationNameInfo nameInfo(name, loc);
@@ -277,11 +279,16 @@ static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
   FunctionDecl *F = FunctionDecl::Create(
       AST, declCtx, loc, nameInfo, FunctionType, nullptr, SC, false, false,
       false, ConstexprSpecKind::Unspecified, {});
-  auto &ParamName = AST.Idents.get("enable");
-  auto P =
-      ParmVarDecl::Create(AST, F, loc, loc, &ParamName, AST.getNSUIntegerType(),
-                          nullptr, SC_None, nullptr);
-  F->setParams({P});
+  SmallVector<ParmVarDecl *> Params;
+  for (size_t i = 0; i < argValues.size(); i++) {
+    auto &ParamName =
+        AST.Idents.get(i == 0 ? "enable" : ("arg" + std::to_string(i)));
+    auto P =
+        ParmVarDecl::Create(AST, F, loc, loc, &ParamName,
+                            AST.getNSUIntegerType(), nullptr, SC_None, nullptr);
+    Params.push_back(P);
+  }
+  F->setParams(Params);
   F->setStorageClass(SC);
   F->addAttr(clang::UsedAttr::CreateImplicit(AST));
 
@@ -304,9 +311,12 @@ static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
       ImplicitCastExpr::Create(AST, FT, CastKind::CK_FunctionToPointerDecay, DR,
                                nullptr, rval, FPOptionsOverride());
 
-  auto Arg = IntegerLiteral::Create(AST, llvm::APInt(64, argValue),
-                                    AST.getNSUIntegerType(), loc);
-  auto BO = CallExpr::Create(AST, expr, {Arg}, F->getType(), rval, loc, {});
+  SmallVector<Expr *> Args;
+  for (uint64_t argValue : argValues) {
+    Args.push_back(IntegerLiteral::Create(AST, llvm::APInt(64, argValue),
+                                          AST.getNSUIntegerType(), loc));
+  }
+  auto BO = CallExpr::Create(AST, expr, Args, F->getType(), rval, loc, {});
 
   Stmts.push_back(BO);
   Stmts.push_back(body);
@@ -347,18 +357,17 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     }
 
-    emitFunctionCall(S, St, "__enzyme_set_mincut", true);
+    emitFunctionCall(S, St, "__enzyme_set_mincut", {1});
     return AttributeApplied;
   }
 };
-
 
 static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutEnableAttrInfo>
     X2("enzyme_mincut_enable", "");
 
 struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
   EnzymeLoopCheckpointingEnableAttrInfo() {
-    OptArgs = 1;
+    OptArgs = 2;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
@@ -380,15 +389,67 @@ struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
                                    class Attr *&Result) const override {
-    if (Attr.getNumArgs() > 0) {
+    unsigned NumArgs = Attr.getNumArgs();
+    if (NumArgs > 2) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
           DiagnosticsEngine::Error,
-          "'enzyme_checkpointing_enable' does not take arguments");
+          "'enzyme_checkpointing_enable' takes at most two arguments "
+          "(a mode string and an optional integer)");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
     }
 
-    emitFunctionCall(S, St, "__enzyme_set_checkpointing", true);
+    uint64_t Mode = 1; // default: regular
+    if (NumArgs >= 1) {
+      auto *Arg0 = Attr.getArgAsExpr(0);
+      StringLiteral *Literal =
+          dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+      if (!Literal) {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "first argument to 'enzyme_checkpointing_enable' must be a "
+            "string literal, either \"binomial\" or \"regular\"");
+        S.Diag(Attr.getLoc(), ID);
+        return AttributeNotApplied;
+      }
+      StringRef Mode0 = Literal->getString();
+      if (Mode0 == "binomial") {
+        Mode = 2;
+      } else if (Mode0 == "regular") {
+        Mode = 1;
+      } else {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "unknown checkpointing mode '%0', expected \"binomial\" or "
+            "\"regular\"");
+        S.Diag(Attr.getLoc(), ID) << Mode0;
+        return AttributeNotApplied;
+      }
+    }
+
+    // __enzyme_set_checkpointing is declared afresh (bypassing normal
+    // redeclaration merging) at every attributed loop, so every call site
+    // must agree on the same arity -- otherwise codegen can reuse an
+    // earlier, differently-typed declaration for a later call, producing
+    // invalid IR. Always emit both arguments, defaulting the count to a
+    // sentinel (all bits set) when the caller didn't provide one, since 0
+    // is a plausible real count.
+    uint64_t Count = std::numeric_limits<uint64_t>::max();
+    if (NumArgs >= 2) {
+      auto *Arg1 = Attr.getArgAsExpr(1);
+      clang::Expr::EvalResult EvalRes;
+      if (!Arg1->EvaluateAsInt(EvalRes, S.getASTContext())) {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Error,
+            "second argument to 'enzyme_checkpointing_enable' must be an "
+            "integer constant");
+        S.Diag(Attr.getLoc(), ID);
+        return AttributeNotApplied;
+      }
+      Count = EvalRes.Val.getInt().getZExtValue();
+    }
+
+    emitFunctionCall(S, St, "__enzyme_set_checkpointing", {Mode, Count});
     return AttributeApplied;
   }
 };
@@ -402,15 +463,14 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_function_like"},
+        {ParsedAttr::AS_GNU, "enzyme_function_like"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_function_like"},
+        {ParsedAttr::AS_C23, "enzyme_function_like"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_function_like"},
+        {ParsedAttr::AS_C2x, "enzyme_function_like"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_function_like"},
-      {ParsedAttr::AS_CXX11, "enzyme::function_like"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_function_like"},
+        {ParsedAttr::AS_CXX11, "enzyme::function_like"}};
     Spellings = S;
   }
 
@@ -608,16 +668,14 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
     OptArgs = 15;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "tessera_op"},
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "tessera_op"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "tessera_op"},
+                                     {ParsedAttr::AS_C23, "tessera_op"},
 #else
-      {ParsedAttr::AS_C2x, "tessera_op"},
+                                     {ParsedAttr::AS_C2x, "tessera_op"},
 #endif
-      {ParsedAttr::AS_CXX11, "tessera_op"},
-      {ParsedAttr::AS_CXX11, "tessera::op"}
-    };
+                                     {ParsedAttr::AS_CXX11, "tessera_op"},
+                                     {ParsedAttr::AS_CXX11, "tessera::op"}};
     Spellings = S;
   }
 
@@ -638,8 +696,7 @@ struct TesseraOpAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo>
-    T1("tessera_op", "");
+static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo> T1("tessera_op", "");
 
 struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
   PureTesseraOpAttrInfo() {
@@ -647,15 +704,14 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "pure_tessera_op"},
+        {ParsedAttr::AS_GNU, "pure_tessera_op"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "pure_tessera_op"},
+        {ParsedAttr::AS_C23, "pure_tessera_op"},
 #else
-      {ParsedAttr::AS_C2x, "pure_tessera_op"},
+        {ParsedAttr::AS_C2x, "pure_tessera_op"},
 #endif
-      {ParsedAttr::AS_CXX11, "pure_tessera_op"},
-      {ParsedAttr::AS_CXX11, "tessera::pure_op"}
-    };
+        {ParsedAttr::AS_CXX11, "pure_tessera_op"},
+        {ParsedAttr::AS_CXX11, "tessera::pure_op"}};
     Spellings = S;
   }
 
@@ -676,22 +732,21 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo>
-    T2("pure_tessera_op", "");
+static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
+                                                             "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
     OptArgs = 1;
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_GNU, "enzyme_shouldrecompute"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_C23, "enzyme_shouldrecompute"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_C2x, "enzyme_shouldrecompute"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_shouldrecompute"},
-      {ParsedAttr::AS_CXX11, "enzyme::shouldrecompute"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_shouldrecompute"},
+        {ParsedAttr::AS_CXX11, "enzyme::shouldrecompute"}};
     Spellings = S;
   }
 
@@ -733,15 +788,14 @@ struct EnzymeInactiveAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_inactive"},
+        {ParsedAttr::AS_GNU, "enzyme_inactive"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_inactive"},
+        {ParsedAttr::AS_C23, "enzyme_inactive"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_inactive"},
+        {ParsedAttr::AS_C2x, "enzyme_inactive"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_inactive"},
-      {ParsedAttr::AS_CXX11, "enzyme::inactive"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_inactive"},
+        {ParsedAttr::AS_CXX11, "enzyme::inactive"}};
     Spellings = S;
   }
 
@@ -837,16 +891,14 @@ struct EnzymeNoFreeAttrInfo : public ParsedAttrInfo {
     OptArgs = 1;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_nofree"},
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "enzyme_nofree"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_nofree"},
+                                     {ParsedAttr::AS_C23, "enzyme_nofree"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_nofree"},
+                                     {ParsedAttr::AS_C2x, "enzyme_nofree"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_nofree"},
-      {ParsedAttr::AS_CXX11, "enzyme::nofree"}
-    };
+                                     {ParsedAttr::AS_CXX11, "enzyme_nofree"},
+                                     {ParsedAttr::AS_CXX11, "enzyme::nofree"}};
     Spellings = S;
   }
 
@@ -942,15 +994,14 @@ struct EnzymeSparseAccumulateAttrInfo : public ParsedAttrInfo {
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-      {ParsedAttr::AS_GNU, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_GNU, "enzyme_sparse_accumulate"},
 #if LLVM_VERSION_MAJOR > 17
-      {ParsedAttr::AS_C23, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_C23, "enzyme_sparse_accumulate"},
 #else
-      {ParsedAttr::AS_C2x, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_C2x, "enzyme_sparse_accumulate"},
 #endif
-      {ParsedAttr::AS_CXX11, "enzyme_sparse_accumulate"},
-      {ParsedAttr::AS_CXX11, "enzyme::sparse_accumulate"}
-    };
+        {ParsedAttr::AS_CXX11, "enzyme_sparse_accumulate"},
+        {ParsedAttr::AS_CXX11, "enzyme::sparse_accumulate"}};
     Spellings = S;
   }
 
