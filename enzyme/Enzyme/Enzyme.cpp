@@ -519,6 +519,7 @@ public:
       : gpubins(gpubins), outfile(outfile) {}
 
   bool run(Module &M) {
+    auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
     bool changed = true;
 
     if (getenv("DEBUG_REACTANT"))
