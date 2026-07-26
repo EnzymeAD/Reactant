@@ -67,8 +67,8 @@ jobs:
     - name: Check out Enzyme-JAX
       uses: actions/checkout@v6
       with:
-        repository: 'EnzymeAD/Enzyme-JaX'
-        path: 'Enzyme-JaX'
+        repository: 'EnzymeAD/Enzyme-JAX'
+        path: 'Enzyme-JAX'
 
     - name: Check out Enzyme GPU Tests
       uses: actions/checkout@v6
@@ -85,7 +85,7 @@ jobs:
         BASE_DIR=${GITHUB_WORKSPACE}
         # Make sure this directory exists, for good measure
         ls -lhrt "${BASE_DIR}"/Reactant
-        ls -lhrt "${BASE_DIR}"/Enzyme-JaX
+        ls -lhrt "${BASE_DIR}"/Enzyme-JAX
         ls -lhrt "${BASE_DIR}"/llvm-project
         echo "BASE_DIR=${BASE_DIR}" >> ${GITHUB_ENV}
 
@@ -96,10 +96,12 @@ jobs:
 
     - name: Cache MLIR
       id: cache-mlir
-      uses: actions/cache@v4
+      uses: wsmoses/gcp-cache@main
       with:
         path: ${{ env.BASE_DIR }}/llvm-project/mlir-build
         key: ${{ matrix.llbuild }}-${{ matrix.os }}-mlir-${{ steps.mlir-commit.outputs.sha_short }}
+        gcp-bucket: enzyme-ci-transient
+        gcp-prefix: reactant-cmake/
 
     - name: MLIR build
       if: steps.cache-mlir.outputs.cache-hit != 'true'
@@ -154,8 +156,8 @@ jobs:
         )
         echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
 
-    - name: EnzymeJaX build
-      working-directory: ${{ env.BASE_DIR }}/'Enzyme-JaX'
+    - name: EnzymeJAX build
+      working-directory: ${{ env.BASE_DIR }}/'Enzyme-JAX'
       run: |
           bazel build $BAZEL_FLAGS --color=yes -c opt //:libRaise.so --test_output=errors
 
@@ -164,7 +166,7 @@ jobs:
       env:
           ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
-          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JaX/bazel-bin/libRaise.so
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
       run: |
           cd LBM

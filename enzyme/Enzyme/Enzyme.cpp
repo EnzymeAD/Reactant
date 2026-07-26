@@ -519,6 +519,7 @@ public:
       : gpubins(gpubins), outfile(outfile) {}
 
   bool run(Module &M) {
+    auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
     bool changed = true;
 
     if (getenv("DEBUG_REACTANT"))
@@ -756,6 +757,11 @@ public:
         runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
                                DeviceLibraries.getValue());
 #else
+    std::string newMod;
+
+    {
+    auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
+
     // load symbol and run pass
     auto lib = dlopen(Passes.c_str(), RTLD_LAZY | RTLD_DEEPBIND);
     if (!lib) {
@@ -768,9 +774,10 @@ public:
     }
     auto runLLVMToMLIRRoundTrip =
         (std::string(*)(std::string, std::string, std::string, std::string))sym;
-    auto newMod =
+    newMod =
         runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
                                DeviceLibraries.getValue());
+    }
 #endif
 
     if (newMod.empty()) {
