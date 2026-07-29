@@ -55,13 +55,13 @@ extern llvm::cl::opt<std::string> ReactantBackend;
 
 std::vector<std::string> GlobalOptimizationRules;
 
-struct ByrefGlobalInfo {
+struct TesseraArgTypeGlobalInfo {
   unsigned idx;
   QualType type;
   SourceLocation loc;
 };
 
-static std::vector<ByrefGlobalInfo> ByrefGlobals;
+static std::vector<TesseraArgTypeGlobalInfo> TesseraArgTypeGlobals;
 
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
@@ -108,12 +108,13 @@ static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
   }
 }
 
-static void emitByrefGlobals(Sema &S, std::vector<ByrefGlobalInfo> &Globals) {
+static void
+emitTesseraArgTypeGlobals(Sema &S,
+                          std::vector<TesseraArgTypeGlobalInfo> &Globals) {
   auto &AST = S.getASTContext();
   DeclContext *declCtx = AST.getTranslationUnitDecl();
   for (auto &info : Globals) {
-    auto &Id =
-        AST.Idents.get("__tessera_byref_arg_type_" + std::to_string(info.idx));
+    auto &Id = AST.Idents.get("__tessera_arg_type_" + std::to_string(info.idx));
     auto *VD = VarDecl::Create(AST, declCtx, info.loc, info.loc, &Id, info.type,
                                nullptr, SC_Static);
     VD->setImplicit(true);
@@ -242,7 +243,7 @@ public:
   void HandleTranslationUnit(ASTContext &Context) override {
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
-    emitByrefGlobals(S, ByrefGlobals);
+    emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
   }
 };
 
@@ -630,21 +631,23 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
     return ParsedAttrInfo::AttributeNotApplied;
   }
 
-  // Scan for byref positions
+  // Scan for byref and result argument positions
   StringRef opStr = Literal->getString();
   StringRef argList = opStr.slice(opStr.find('(') + 1, opStr.find(')'));
-  SmallVector<unsigned> byrefPositions;
+  SmallVector<unsigned> byrefAndResultPositions;
   if (!argList.trim().empty()) {
     SmallVector<StringRef> argParts;
     argList.split(argParts, ',');
     for (auto [idx, arg] : llvm::enumerate(argParts)) {
       arg = arg.trim();
       if (arg.contains(":byref") || arg.contains(": byref"))
-        byrefPositions.push_back(idx);
+        byrefAndResultPositions.push_back(idx);
+      if (arg.contains(":result") || arg.contains(": result"))
+        byrefAndResultPositions.push_back(idx);
     }
   }
 
-  // Emit a global for each byref parameter
+  // Emit a global for each byref or result parameter
   auto FD = cast<FunctionDecl>(D);
   DeclContext *declCtx = D->getDeclContext();
   for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
@@ -656,9 +659,9 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
   auto loc = FD->getLocation();
 
   static unsigned globalCounter = 0;
-  SmallVector<unsigned> byrefGlobalIndices;
+  SmallVector<unsigned> byrefAndResultGlobalIndices;
 
-  for (unsigned idx : byrefPositions) {
+  for (unsigned idx : byrefAndResultPositions) {
     if (idx >= params.size())
       continue;
     auto *param = params[idx];
@@ -667,15 +670,15 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
       pointeeTy = (pointeeTy->getPointeeType());
 
     unsigned thisIdx = globalCounter++;
-    byrefGlobalIndices.push_back(thisIdx);
-    ByrefGlobals.push_back({thisIdx, pointeeTy, loc});
+    byrefAndResultGlobalIndices.push_back(thisIdx);
+    TesseraArgTypeGlobals.push_back({thisIdx, pointeeTy, loc});
   }
 
   // Build annotation string: "tessera_op=eigen.inv(x:byref, y):3,4"
   std::string annotation = (attrName + "=" + opStr).str();
 
   // Parse remaining args representing sizes of function parameters
-  for (auto [i, idx] : llvm::enumerate(byrefGlobalIndices)) {
+  for (auto [i, idx] : llvm::enumerate(byrefAndResultGlobalIndices)) {
     annotation += (i == 0 ? ":globals=" : ",") + std::to_string(idx);
   }
 
