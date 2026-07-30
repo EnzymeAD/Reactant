@@ -135,7 +135,7 @@ jobs:
           CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
           CUDA_PATH: /usr/local/cuda
-          DEBUG_REACTANT=1
+          DEBUG_REACTANT: 1
       run: |
           export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd XSBench
