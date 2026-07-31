@@ -75,7 +75,7 @@ jobs:
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
-        ref: 'mlir'
+        ref: 'jmp/compare-llvm'
 
     - name: Set BASE_DIR
       # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
@@ -164,7 +164,7 @@ jobs:
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
@@ -175,7 +175,7 @@ jobs:
     - name: XSBench build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
@@ -186,10 +186,12 @@ jobs:
     - name: RSBench build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
       run: |
           cd RSBench
-          make -j
+          # The rsbench-llvm target uses a separate compilation style. By using USE_ENZYME_LLVM=no,
+          # we're trying to build using Reactant with that same style.
+          make USE_ENZYME_LLVM=no -j rsbench-llvm
