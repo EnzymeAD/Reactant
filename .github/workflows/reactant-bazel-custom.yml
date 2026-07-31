@@ -61,7 +61,7 @@ jobs:
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
-        ref: 'jmp/compare-llvm'
+        ref: 'mlir'
 
 
     - name: Set BASE_DIR
