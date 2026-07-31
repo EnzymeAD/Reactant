@@ -143,3 +143,15 @@ jobs:
           export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd XSBench
           make EMBEDDED_CLANG=no -j
+
+    - name: RSBench build
+      working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
+      env:
+          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/libClangReactant-23.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang/clang --driver-mode=g++ -resource-dir=${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/reactant-clang-resource
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/enzyme_ad/libRaise.so
+          CUDA_PATH: /usr/local/cuda
+      run: |
+          export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
+          cd RSBench
+          make EMBEDDED_CLANG=no -j
