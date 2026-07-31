@@ -75,7 +75,7 @@ jobs:
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
-        ref: 'jmp/compare-llvm'
+        ref: 'mlir'
 
     - name: Set BASE_DIR
       # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
