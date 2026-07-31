@@ -61,7 +61,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         repository: 'llvm/llvm-project'
-        ref: '87d42c13cd6b119240781f31e5869981d500a186'
+        ref: '0220c07a94012b9dce9250addac6a8ee1f674b21'
         path: 'llvm-project'
 
     - name: Check out Enzyme-JAX
@@ -75,7 +75,7 @@ jobs:
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
-        ref: 'mlir'
+        ref: 'jmp/compare-llvm'
 
     - name: Set BASE_DIR
       # We have to use `${GITHUB_WORKSPACE}` instead of `github.workspace` because GitHub
@@ -164,7 +164,7 @@ jobs:
     - name: LBM build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
@@ -175,7 +175,7 @@ jobs:
     - name: XSBench build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
@@ -186,7 +186,7 @@ jobs:
     - name: RSBench build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
@@ -197,7 +197,7 @@ jobs:
     - name: LULESH build
       working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
       env:
-          ENZYME_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-23.so
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
           CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
           LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
           CUDA_PATH: /usr/local/cuda
