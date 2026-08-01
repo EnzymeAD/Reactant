@@ -106,6 +106,13 @@
 
 #if REACTANT_USE_LINKED_RAISE
 #include "src/enzyme_ad/jax/raise.h"
+#else
+struct MLIRRoundTripOptions {
+  bool dataflow;
+  bool markReadonly;
+  bool preADLowerAffine;
+  bool splitMultiResults;
+};
 #endif
 
 using namespace llvm;
@@ -126,6 +133,21 @@ llvm::cl::opt<std::string>
     DeviceLibraries("reactant-device-lib", cl::Hidden, cl::init(""),
                     cl::desc("Library to link during device compilation"));
 
+llvm::cl::opt<bool>
+    DataFlowActivity("reactant-dataflow", cl::init(false), cl::Hidden,
+                     cl::desc("Use data-flow activity analysis"));
+
+llvm::cl::opt<bool>
+    MarkReadOnly("reactant-mark-readonly", cl::init(false), cl::Hidden,
+                 cl::desc("If using data-flow analysis, mark pointers that are only read from"));
+
+llvm::cl::opt<bool>
+    SplitMultiResults("reactant-split-multi-results", cl::init(false), cl::Hidden,
+                 cl::desc("Split certain operations that produce multiple results"));
+
+llvm::cl::opt<bool>
+    PreADLowerAffine("reactant-pre-ad-lower-affine", cl::init(false), cl::Hidden,
+                 cl::desc("Lower affine dialect operations right before differentiation"));
 
 namespace {
 
@@ -751,11 +773,17 @@ public:
     std::string MStr;
     llvm::raw_string_ostream ss(MStr);
     ss << M;
+    MLIRRoundTripOptions options{
+      .dataflow = DataFlowActivity.getValue(),
+      .markReadonly = MarkReadOnly.getValue(),
+      .preADLowerAffine = PreADLowerAffine.getValue(),
+      .splitMultiResults = SplitMultiResults.getValue(),
+    };
 
 #if REACTANT_USE_LINKED_RAISE 
     auto newMod =
         runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
-                               DeviceLibraries.getValue());
+                               DeviceLibraries.getValue(), &options);
 #else
     std::string newMod;
 
@@ -773,10 +801,10 @@ public:
       llvm::errs() << " could not find sym\n";
     }
     auto runLLVMToMLIRRoundTrip =
-        (std::string(*)(std::string, std::string, std::string, std::string))sym;
+        (std::string(*)(std::string, std::string, std::string, std::string, MLIRRoundTripOptions *))sym;
     newMod =
         runLLVMToMLIRRoundTrip(MStr, outfile, ReactantBackend.getValue(),
-                               DeviceLibraries.getValue());
+                               DeviceLibraries.getValue(), &options);
     }
 #endif
 
