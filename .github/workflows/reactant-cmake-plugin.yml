@@ -192,6 +192,15 @@ jobs:
           CUDA_PATH: /usr/local/cuda
       run: |
           cd RSBench
-          # The rsbench-llvm target uses a separate compilation style. By using USE_ENZYME_LLVM=no,
-          # we're trying to build using Reactant with that same style.
-          make USE_ENZYME_LLVM=no -j rsbench-llvm
+          make -j
+
+    - name: LULESH build
+      working-directory: ${{ env.BASE_DIR }}/'Enzyme-GPU-Tests'
+      env:
+          REACTANT_PATH: ${{ env.BASE_DIR }}/Reactant/reactant-build/Enzyme/libClangReactant-24.so
+          CLANG_PATH: ${{ env.BASE_DIR }}/llvm-project/mlir-build/bin/clang++
+          LIB_RAISE_PATH: ${{ env.BASE_DIR }}/Enzyme-JAX/bazel-bin/libRaise.so
+          CUDA_PATH: /usr/local/cuda
+      run: |
+          cd LULESH
+          make -j
