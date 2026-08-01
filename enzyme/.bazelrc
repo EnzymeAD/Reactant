@@ -6,10 +6,9 @@ common:public_cache_push --config=public_cache --remote_upload_local_results=tru
 
 common --noenable_bzlmod
 common --repo_env=USE_PYWRAP_RULES=True
+common --experimental_repo_remote_exec
 
 build --announce_rc
-
-build --experimental_repo_remote_exec
 build --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
 build --cxxopt=-w --host_cxxopt=-w
 #build --features=external_include_paths
