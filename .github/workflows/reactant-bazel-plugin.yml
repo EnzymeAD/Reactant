@@ -53,12 +53,12 @@ jobs:
           ln -sf /usr/local/cuda-12.9 /usr/local/cuda
 
     - name: Check out Reactant
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         path: 'Reactant'
 
     - name: Check out Enzyme GPU Tests
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
