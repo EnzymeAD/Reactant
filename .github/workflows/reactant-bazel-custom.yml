@@ -150,9 +150,7 @@ jobs:
       run: |
           export PATH="${{ env.BASE_DIR }}/Reactant/enzyme/bazel-bin/external/llvm-project/clang:$PATH"
           cd RSBench
-          # The rsbench-llvm target uses a separate compilation style. By using USE_ENZYME_LLVM=no,
-          # we're trying to build using Reactant with that same style.
-          make USE_ENZYME_LLVM=no EMBEDDED_CLANG=yes -j rsbench-llvm
+          make EMBEDDED_CLANG=yes -j
 
     - name: LULESH build
       working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
