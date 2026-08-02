@@ -112,6 +112,8 @@ struct MLIRRoundTripOptions {
   bool markReadonly;
   bool preADLowerAffine;
   bool splitMultiResults;
+  bool removeAtomics;
+  bool sortBlockMemory;
 };
 #endif
 
@@ -148,6 +150,14 @@ llvm::cl::opt<bool>
 llvm::cl::opt<bool>
     PreADLowerAffine("reactant-pre-ad-lower-affine", cl::init(false), cl::Hidden,
                  cl::desc("Lower affine dialect operations right before differentiation"));
+
+llvm::cl::opt<bool>
+    RemoveAtomics("reactant-remove-atomics", cl::init(false), cl::Hidden,
+                 cl::desc("Replace provably race-free atomics with plain load/store after differentiation"));
+
+llvm::cl::opt<bool>
+    SortBlockMemory("reactant-sort-block-memory", cl::init(false), cl::Hidden,
+                 cl::desc("Hoist non-overlapping loads to the start of their block and sink stores to the end"));
 
 namespace {
 
@@ -778,6 +788,8 @@ public:
       .markReadonly = MarkReadOnly.getValue(),
       .preADLowerAffine = PreADLowerAffine.getValue(),
       .splitMultiResults = SplitMultiResults.getValue(),
+      .removeAtomics = RemoveAtomics.getValue(),
+      .sortBlockMemory = SortBlockMemory.getValue(),
     };
 
 #if REACTANT_USE_LINKED_RAISE 
