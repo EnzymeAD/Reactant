@@ -325,20 +325,20 @@ static void emitFunctionCall(Sema &S, Stmt *St, std::string FunctionName,
   ForSt->setBody(newBody);
 }
 
-struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
-  EnzymeLoopMincutEnableAttrInfo() {
+struct EnzymeLoopMincutSetAttrInfo : public ParsedAttrInfo {
+  EnzymeLoopMincutSetAttrInfo() {
     OptArgs = 1;
     // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
     // [[plugin::example]] supported.
     static constexpr Spelling S[] = {
-        {ParsedAttr::AS_GNU, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_GNU, "enzyme_set_mincut"},
 #if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_C23, "enzyme_set_mincut"},
 #else
-        {ParsedAttr::AS_C2x, "enzyme_mincut_enable"},
+        {ParsedAttr::AS_C2x, "enzyme_set_mincut"},
 #endif
-        {ParsedAttr::AS_CXX11, "enzyme_mincut_enable"},
-        {ParsedAttr::AS_CXX11, "enzyme::mincut_enable"}};
+        {ParsedAttr::AS_CXX11, "enzyme_set_mincut"},
+        {ParsedAttr::AS_CXX11, "enzyme::set_mincut"}};
     Spellings = S;
   }
 
@@ -349,21 +349,34 @@ struct EnzymeLoopMincutEnableAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
                                    class Attr *&Result) const override {
-    if (Attr.getNumArgs() > 0) {
+    if (Attr.getNumArgs() < 1 || Attr.getNumArgs() > 1) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
           DiagnosticsEngine::Error,
-          "'enzyme_mincut_enable' does not take arguments");
+          "'enzyme_set_mincut' takes a single argument");
       S.Diag(Attr.getLoc(), ID);
       return AttributeNotApplied;
     }
 
-    emitFunctionCall(S, St, "__enzyme_set_mincut", {1});
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    clang::Expr::EvalResult EvalRes;
+
+    if (!Arg0->EvaluateAsInt(EvalRes, S.getASTContext())) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "argument to 'enzyme_set_mincut' must be an "
+          "integer constant");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    uint64_t enable = EvalRes.Val.getInt().getZExtValue();
+
+    emitFunctionCall(S, St, "__enzyme_set_mincut", {enable});
     return AttributeApplied;
   }
 };
 
-static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutEnableAttrInfo>
-    X2("enzyme_mincut_enable", "");
+static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutSetAttrInfo>
+    X2("enzyme_set_mincut", "");
 
 struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
   EnzymeLoopCheckpointingEnableAttrInfo() {
