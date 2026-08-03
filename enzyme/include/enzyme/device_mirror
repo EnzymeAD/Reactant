@@ -1,0 +1,12 @@
+#pragma once
+
+// Tell Reactant that `device` is an already allocated, synchronized device
+// representation of `host`.  This is a compiler intrinsic: it has no runtime
+// definition and returns the host value unchanged after lowering.
+//
+// DeviceT is intentionally generic so callers can use either a device pointer
+// or a frontend-provided device view/memref representation.  Transformations
+// consuming the annotation are responsible for checking the concrete type and
+// any aliasing requirements they impose.
+template <typename HostT, typename DeviceT>
+HostT __enzyme_device_mirror(HostT host, DeviceT device);
