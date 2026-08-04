@@ -114,6 +114,7 @@ struct MLIRRoundTripOptions {
   bool splitMultiResults;
   bool removeAtomics;
   bool sortBlockMemory;
+  bool hoistLoopAllocations;
 };
 #endif
 
@@ -158,6 +159,10 @@ llvm::cl::opt<bool>
 llvm::cl::opt<bool>
     SortBlockMemory("reactant-sort-block-memory", cl::init(false), cl::Hidden,
                  cl::desc("Hoist non-overlapping loads to the start of their block and sink stores to the end"));
+
+llvm::cl::opt<bool>
+    HoistLoopAllocations("reactant-hoist-loop-allocations", cl::init(true), cl::Hidden,
+                 cl::desc("Hoist allocations out of loops after differentiation"));
 
 namespace {
 
@@ -790,6 +795,7 @@ public:
       .splitMultiResults = SplitMultiResults.getValue(),
       .removeAtomics = RemoveAtomics.getValue(),
       .sortBlockMemory = SortBlockMemory.getValue(),
+      .hoistLoopAllocations = HoistLoopAllocations.getValue(),
     };
 
 #if REACTANT_USE_LINKED_RAISE 
