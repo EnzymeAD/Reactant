@@ -53,25 +53,25 @@ jobs:
     
  
     - name: Check out Reactant
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         path: 'Reactant'
 
     - name: Check out LLVM
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: 'llvm/llvm-project'
         ref: '0220c07a94012b9dce9250addac6a8ee1f674b21'
         path: 'llvm-project'
 
     - name: Check out Enzyme-JAX
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: 'EnzymeAD/Enzyme-JAX'
         path: 'Enzyme-JAX'
 
     - name: Check out Enzyme GPU Tests
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: 'wsmoses/Enzyme-GPU-Tests'
         path: 'Enzyme-GPU-Tests'
