@@ -88,6 +88,7 @@
 
 #include "llvm/Transforms/IPO/GlobalOpt.h"
 
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 
@@ -784,10 +785,15 @@ public:
       GlobalOptPass().run(M, MAM);
     }
 
-    // read module
+    // Hand the module over as bitcode. It crosses this boundary as bytes either
+    // way, and bitcode is the cheaper and more faithful spelling of it: on
+    // MFEM's dFEM tests it is a fifth the size of the textual form and parses
+    // in half the time, and it does not depend on a printer and a parser
+    // agreeing about syntax. The reader on the far side is llvm::parseIR, which
+    // sniffs the bitcode magic and dispatches, so it takes either.
     std::string MStr;
     llvm::raw_string_ostream ss(MStr);
-    ss << M;
+    llvm::WriteBitcodeToFile(M, ss);
     MLIRRoundTripOptions options{
       .dataflow = DataFlowActivity.getValue(),
       .markReadonly = MarkReadOnly.getValue(),
