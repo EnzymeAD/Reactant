@@ -885,8 +885,15 @@ public:
       : ReactantBase(gpubins, outfile) {}
 
   Result run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM) {
-    return ReactantBase::run(M) ? PreservedAnalyses::none()
-                                : PreservedAnalyses::all();
+    bool changed = ReactantBase::run(M);
+    // PreserveNVVM(Begin) at pipeline start promoted the functions enzyme
+    // has a stake in to external linkage, recording what they were. What
+    // comes back from the round trip still says so: restore them, or every
+    // translation unit exports a strong copy of a function the whole program
+    // was supposed to share -- and the first object on the link line decides
+    // whose copy everyone runs.
+    PreserveNVVMNewPM(/*Begin*/ false).run(M, MAM);
+    return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
   }
 
   static bool isRequired() { return true; }
