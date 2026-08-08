@@ -1012,6 +1012,19 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
                                  std::string outfile) {
 
   llvm::errs() << " registering reactant\n";
+
+  // The clang plugin turns an enzyme_inactive attribute into a global naming
+  // the function it was written on, one per translation unit that saw the
+  // declaration. PreserveNVVM is what reads those, moves what they say onto
+  // the function, and takes them away again -- left standing they are a
+  // definition of the same name in every such unit, which is a link MFEM does
+  // not get to the end of. registerExporter below asks for it in the same way.
+  auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+  };
+  PB.registerPipelineStartEPCallback(loadNVVM);
+  PB.registerFullLinkTimeOptimizationEarlyEPCallback(loadNVVM);
+
 #if LLVM_VERSION_MAJOR >= 20
   auto loadPass =
       [=](ModulePassManager &MPM, OptimizationLevel Level, ThinOrFullLTOPhase)
