@@ -116,6 +116,7 @@ struct MLIRRoundTripOptions {
   bool removeAtomics;
   bool sortBlockMemory;
   bool hoistLoopAllocations;
+  bool lowerInvoke;
 };
 #endif
 
@@ -164,6 +165,11 @@ llvm::cl::opt<bool>
 llvm::cl::opt<bool>
     HoistLoopAllocations("reactant-hoist-loop-allocations", cl::init(true), cl::Hidden,
                  cl::desc("Hoist allocations out of loops after differentiation"));
+
+llvm::cl::opt<bool>
+    LowerInvoke("reactant-lower-invoke", cl::init(true), cl::Hidden,
+                 cl::desc("Lower invoke to call before import, discarding exception handling; "
+                          "0 keeps unwind edges, leaving throwing or catching functions in cf form"));
 
 namespace {
 
@@ -802,6 +808,7 @@ public:
       .removeAtomics = RemoveAtomics.getValue(),
       .sortBlockMemory = SortBlockMemory.getValue(),
       .hoistLoopAllocations = HoistLoopAllocations.getValue(),
+      .lowerInvoke = LowerInvoke.getValue(),
     };
 
 #if REACTANT_USE_LINKED_RAISE 
