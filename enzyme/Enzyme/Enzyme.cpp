@@ -800,6 +800,13 @@ public:
     std::string MStr;
     llvm::raw_string_ostream ss(MStr);
     llvm::WriteBitcodeToFile(M, ss);
+    // The flag wins when given; otherwise REACTANT_LOWER_INVOKE=0/1 decides,
+    // so a deployment can flip it without threading -mllvm flags through its
+    // build system.
+    bool lowerInvoke = LowerInvoke.getValue();
+    if (LowerInvoke.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_LOWER_INVOKE"))
+        lowerInvoke = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
       .dataflow = DataFlowActivity.getValue(),
       .markReadonly = MarkReadOnly.getValue(),
@@ -808,7 +815,7 @@ public:
       .removeAtomics = RemoveAtomics.getValue(),
       .sortBlockMemory = SortBlockMemory.getValue(),
       .hoistLoopAllocations = HoistLoopAllocations.getValue(),
-      .lowerInvoke = LowerInvoke.getValue(),
+      .lowerInvoke = lowerInvoke,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
