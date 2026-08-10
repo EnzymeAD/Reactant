@@ -117,6 +117,7 @@ struct MLIRRoundTripOptions {
   bool sortBlockMemory;
   bool hoistLoopAllocations;
   bool lowerInvoke;
+  bool verifyEach;
 };
 #endif
 
@@ -170,6 +171,12 @@ llvm::cl::opt<bool>
     LowerInvoke("reactant-lower-invoke", cl::init(true), cl::Hidden,
                  cl::desc("Lower invoke to call before import, discarding exception handling; "
                           "0 keeps unwind edges, leaving throwing or catching functions in cf form"));
+
+llvm::cl::opt<bool>
+    VerifyEach("reactant-verify-each", cl::init(false), cl::Hidden,
+                 cl::desc("Verify the module after every pass of the raising pipeline "
+                          "instead of once after it; per-pass verification is a third "
+                          "of the pipeline on large translation units"));
 
 namespace {
 
@@ -807,6 +814,10 @@ public:
     if (LowerInvoke.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_LOWER_INVOKE"))
         lowerInvoke = env[0] && env[0] != '0';
+    bool verifyEach = VerifyEach.getValue();
+    if (VerifyEach.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_VERIFY_EACH"))
+        verifyEach = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
       .dataflow = DataFlowActivity.getValue(),
       .markReadonly = MarkReadOnly.getValue(),
@@ -816,6 +827,7 @@ public:
       .sortBlockMemory = SortBlockMemory.getValue(),
       .hoistLoopAllocations = HoistLoopAllocations.getValue(),
       .lowerInvoke = lowerInvoke,
+      .verifyEach = verifyEach,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
