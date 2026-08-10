@@ -627,6 +627,23 @@ public:
         if (!F.empty())
           F.setLinkage(Function::LinkageTypes::InternalLinkage);
       }
+      // The device module carries its own copies of globals the host also
+      // defines -- statics in headers compiled for both sides. They are
+      // separate objects: the host keeps its copy, and the device copy is
+      // internalized so linking cannot see two strong definitions of one
+      // name. Special globals (llvm.used and friends, appending linkage)
+      // keep their semantics.
+      for (auto &G : mod2->globals()) {
+        if (!G.hasInitializer())
+          continue;
+        if (G.hasAppendingLinkage() || G.getName().starts_with("llvm."))
+          continue;
+        // Enzyme's activity markers are recognized by name; a conflict
+        // rename would turn enzyme_dup into enzyme_dup.2 and lose them.
+        if (G.getName().contains("enzyme_"))
+          continue;
+        G.setLinkage(GlobalValue::InternalLinkage);
+      }
       if (getenv("DEBUG_REACTANT"))
         llvm::errs() << " mod2: " << *mod2 << "\n";
 
@@ -659,6 +676,11 @@ public:
 
             if (nameVal.size())
               if (auto MF = mod2->getFunction(nameVal)) {
+                // A registered kernel whose device body is not in this
+                // module stays a declaration, and a declaration cannot
+                // wear link-once linkage.
+                if (MF->isDeclaration())
+                  continue;
                 MF->setName("reactant$" + F22->getName());
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
