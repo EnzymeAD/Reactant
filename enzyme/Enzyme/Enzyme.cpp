@@ -1076,8 +1076,14 @@ AnalysisKey ExporterNewPM::Key;
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
 
+  // The raising pipeline has no custom derivative rules, so nothing here will
+  // ever resolve one. Consuming the registration globals still matters -- left
+  // standing they are a definition of the same name in every unit that saw the
+  // declaration -- but holding the functions they name external and uninlined
+  // only keeps dead code, and the kernels it launches, alive.
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
-    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true,
+                                  /*PreserveCustomRuleLinkage*/ false));
   };
 
   // We should register at vectorizer start for consistency, however,
@@ -1122,8 +1128,12 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
   // the function, and takes them away again -- left standing they are a
   // definition of the same name in every such unit, which is a link MFEM does
   // not get to the end of. registerExporter below asks for it in the same way.
+  // It has no custom derivative rules either, so nothing here will ever
+  // resolve one; holding the functions a rule names external and uninlined
+  // would only keep dead code, and the kernels it launches, alive.
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
-    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true,
+                                  /*PreserveCustomRuleLinkage*/ false));
   };
   PB.registerPipelineStartEPCallback(loadNVVM);
   PB.registerFullLinkTimeOptimizationEarlyEPCallback(loadNVVM);
