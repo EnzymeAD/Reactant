@@ -172,11 +172,11 @@ llvm::cl::opt<bool>
                  cl::desc("Lower invoke to call before import, discarding exception handling; "
                           "0 keeps unwind edges, leaving throwing or catching functions in cf form"));
 
-llvm::cl::opt<bool>
-    VerifyEach("reactant-verify-each", cl::init(false), cl::Hidden,
-                 cl::desc("Verify the module after every pass of the raising pipeline "
-                          "instead of once after it; per-pass verification is a third "
-                          "of the pipeline on large translation units"));
+llvm::cl::opt<bool> VerifyEach(
+    "reactant-verify-each", cl::init(false), cl::Hidden,
+    cl::desc("Verify the module after every pass of the raising pipeline "
+             "instead of once after it; per-pass verification is a third "
+             "of the pipeline on large translation units"));
 
 namespace {
 
@@ -567,9 +567,8 @@ static std::string reExportPath(llvm::StringRef src, bool besideSource) {
     return (src + ".re_export").str();
   llvm::SmallString<128> tmp;
   llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, tmp);
-  llvm::sys::path::append(tmp, "reactant-" +
-                                   llvm::utohexstr(llvm::hash_value(src)) +
-                                   ".re_export");
+  llvm::sys::path::append(
+      tmp, "reactant-" + llvm::utohexstr(llvm::hash_value(src)) + ".re_export");
   return std::string(tmp);
 }
 
@@ -890,15 +889,15 @@ public:
       if (const char *env = getenv("REACTANT_VERIFY_EACH"))
         verifyEach = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
-      .dataflow = DataFlowActivity.getValue(),
-      .markReadonly = MarkReadOnly.getValue(),
-      .preADLowerAffine = PreADLowerAffine.getValue(),
-      .splitMultiResults = SplitMultiResults.getValue(),
-      .removeAtomics = RemoveAtomics.getValue(),
-      .sortBlockMemory = SortBlockMemory.getValue(),
-      .hoistLoopAllocations = HoistLoopAllocations.getValue(),
-      .lowerInvoke = lowerInvoke,
-      .verifyEach = verifyEach,
+        .dataflow = DataFlowActivity.getValue(),
+        .markReadonly = MarkReadOnly.getValue(),
+        .preADLowerAffine = PreADLowerAffine.getValue(),
+        .splitMultiResults = SplitMultiResults.getValue(),
+        .removeAtomics = RemoveAtomics.getValue(),
+        .sortBlockMemory = SortBlockMemory.getValue(),
+        .hoistLoopAllocations = HoistLoopAllocations.getValue(),
+        .lowerInvoke = lowerInvoke,
+        .verifyEach = verifyEach,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
