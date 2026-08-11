@@ -226,7 +226,7 @@ set(UPSTREAM_ENZYME_BUILD_DIR "")
 FetchContent_Declare(
   upstream_enzyme
   GIT_REPOSITORY https://github.com/EnzymeAD/Enzyme.git
-  GIT_TAG b12f5fd88acf7ebf8c1ea6165f34c71e66975d58
+  GIT_TAG af01140019db7228d9aa1dc09bda721c716dc2ac
   SOURCE_SUBDIR enzyme
 )
 
