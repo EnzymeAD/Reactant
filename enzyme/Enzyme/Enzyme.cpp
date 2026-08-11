@@ -697,6 +697,7 @@ public:
         // rename would turn enzyme_dup into enzyme_dup.2 and lose them.
         if (G.getName().contains("enzyme_"))
           continue;
+        G.setComdat(nullptr);
         G.setLinkage(GlobalValue::InternalLinkage);
       }
       if (getenv("DEBUG_REACTANT"))
@@ -739,6 +740,12 @@ public:
                 MF->setName("reactant$" + F22->getName());
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
+                // The stub keeps its comdat only as long as it keeps external
+                // linkage. Made internal inside one, the linker drops the
+                // section when another object wins the group and the calls
+                // this unit still makes to it have nowhere to go: "defined in
+                // discarded section".
+                F22->setComdat(nullptr);
                 F22->setLinkage(Function::LinkageTypes::InternalLinkage);
                 toInternalize.push_back(MF->getName().str());
                 CI->eraseFromParent();
@@ -753,6 +760,7 @@ public:
       M.getContext().setDiagnosticHandler(std::move(handler));
       for (auto name : toInternalize)
         if (auto F = M.getFunction(name)) {
+          F->setComdat(nullptr);
           F->setLinkage(Function::LinkageTypes::InternalLinkage);
         }
     }
