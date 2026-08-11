@@ -562,6 +562,17 @@ void fixup(Module &M) {
   }
 }
 
+static std::string reExportPath(llvm::StringRef src, bool besideSource) {
+  if (besideSource)
+    return (src + ".re_export").str();
+  llvm::SmallString<128> tmp;
+  llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, tmp);
+  llvm::sys::path::append(tmp, "reactant-" +
+                                   llvm::utohexstr(llvm::hash_value(src)) +
+                                   ".re_export");
+  return std::string(tmp);
+}
+
 class ReactantBase {
 public:
   std::vector<std::string> gpubins;
@@ -573,20 +584,50 @@ public:
     auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
     bool changed = true;
 
+    // Textual IR cannot be read into a context that drops value names, which
+    // is what a -O2 compile hands us.
+    auto discard = M.getContext().shouldDiscardValueNames();
+    M.getContext().setDiscardValueNames(false);
+
+    // Nothing to raise if the device side defined nothing: cmake compiles the
+    // cuda toolkit's link.stub for its device link step, and that stub only
+    // carries the fatbin the real translation units produced. Running the
+    // round trip over it would emit the stub's module asm a second time.
+    SmallVector<std::unique_ptr<Module>> deviceMods;
+    {
+      bool anyDeviceCode = false;
+      for (auto bin : gpubins) {
+        SMDiagnostic Err;
+        auto path = reExportPath(bin, /*besideSource=*/true);
+        auto mod2 = llvm::parseIRFile(path, Err, M.getContext());
+        if (!mod2) {
+          path = reExportPath(bin, /*besideSource=*/false);
+          mod2 = llvm::parseIRFile(path, Err, M.getContext());
+        }
+        if (getenv("DEBUG_REACTANT"))
+          llvm::errs() << " device module " << path << ": "
+                       << (mod2 ? (mod2->empty() ? "empty" : "present")
+                                : Err.getMessage())
+                       << "\n";
+        if (mod2 && !mod2->empty())
+          anyDeviceCode = true;
+        deviceMods.emplace_back(std::move(mod2));
+      }
+      if (!gpubins.empty() && !anyDeviceCode) {
+        M.getContext().setDiscardValueNames(discard);
+        return false;
+      }
+    }
+
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << " pre fix: " << M << "\n";
     fixup(M);
-    auto discard = M.getContext().shouldDiscardValueNames();
-    M.getContext().setDiscardValueNames(false);
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << " post fix: " << M << "\n";
 
-    for (auto bin : gpubins) {
-      SMDiagnostic Err;
-      auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
-      auto mod2 = llvm::parseIRFile(bin + ".re_export", Err, M.getContext());
+    for (auto &mod2 : deviceMods) {
       if (!mod2) {
-        Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
+        llvm::errs() << "LLVMToMLIR: could not read the device module\n";
         exit(1);
       }
 
@@ -993,19 +1034,26 @@ public:
   ExporterNewPM(std::string file) : firstfile(file) {}
 
   Result run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM) {
-    std::string filename = firstfile + ".re_export";
-
     auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
 
     std::error_code EC;
-    llvm::raw_fd_ostream file(filename, EC); //, llvm::sys::fs::OF_Text);
+    auto file = std::make_unique<llvm::raw_fd_ostream>(
+        reExportPath(firstfile, /*besideSource=*/true), EC);
 
     if (EC) {
-      llvm::errs() << "Error opening file: " << EC.message() << "\n";
-      exit(1);
+      // Not every source sits somewhere writable: cmake compiles the cuda
+      // toolkit's own link.stub, out of the toolkit's directory, for the
+      // device link step. Fall back to a temp file the host side names the
+      // same way.
+      file = std::make_unique<llvm::raw_fd_ostream>(
+          reExportPath(firstfile, /*besideSource=*/false), EC);
+      if (EC) {
+        llvm::errs() << "Error opening file: " << EC.message() << "\n";
+        exit(1);
+      }
     }
 
-    file << M;
+    *file << M;
     definePoisonEnzymeCalls(M);
     return PreservedAnalyses::all();
   }
