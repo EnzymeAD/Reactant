@@ -172,11 +172,11 @@ llvm::cl::opt<bool>
                  cl::desc("Lower invoke to call before import, discarding exception handling; "
                           "0 keeps unwind edges, leaving throwing or catching functions in cf form"));
 
-llvm::cl::opt<bool>
-    VerifyEach("reactant-verify-each", cl::init(false), cl::Hidden,
-                 cl::desc("Verify the module after every pass of the raising pipeline "
-                          "instead of once after it; per-pass verification is a third "
-                          "of the pipeline on large translation units"));
+llvm::cl::opt<bool> VerifyEach(
+    "reactant-verify-each", cl::init(false), cl::Hidden,
+    cl::desc("Verify the module after every pass of the raising pipeline "
+             "instead of once after it; per-pass verification is a third "
+             "of the pipeline on large translation units"));
 
 namespace {
 
@@ -562,6 +562,16 @@ void fixup(Module &M) {
   }
 }
 
+static std::string reExportPath(llvm::StringRef src, bool besideSource) {
+  if (besideSource)
+    return (src + ".re_export").str();
+  llvm::SmallString<128> tmp;
+  llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, tmp);
+  llvm::sys::path::append(
+      tmp, "reactant-" + llvm::utohexstr(llvm::hash_value(src)) + ".re_export");
+  return std::string(tmp);
+}
+
 class ReactantBase {
 public:
   std::vector<std::string> gpubins;
@@ -573,20 +583,50 @@ public:
     auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
     bool changed = true;
 
+    // Textual IR cannot be read into a context that drops value names, which
+    // is what a -O2 compile hands us.
+    auto discard = M.getContext().shouldDiscardValueNames();
+    M.getContext().setDiscardValueNames(false);
+
+    // Nothing to raise if the device side defined nothing: cmake compiles the
+    // cuda toolkit's link.stub for its device link step, and that stub only
+    // carries the fatbin the real translation units produced. Running the
+    // round trip over it would emit the stub's module asm a second time.
+    SmallVector<std::unique_ptr<Module>> deviceMods;
+    {
+      bool anyDeviceCode = false;
+      for (auto bin : gpubins) {
+        SMDiagnostic Err;
+        auto path = reExportPath(bin, /*besideSource=*/true);
+        auto mod2 = llvm::parseIRFile(path, Err, M.getContext());
+        if (!mod2) {
+          path = reExportPath(bin, /*besideSource=*/false);
+          mod2 = llvm::parseIRFile(path, Err, M.getContext());
+        }
+        if (getenv("DEBUG_REACTANT"))
+          llvm::errs() << " device module " << path << ": "
+                       << (mod2 ? (mod2->empty() ? "empty" : "present")
+                                : Err.getMessage())
+                       << "\n";
+        if (mod2 && !mod2->empty())
+          anyDeviceCode = true;
+        deviceMods.emplace_back(std::move(mod2));
+      }
+      if (!gpubins.empty() && !anyDeviceCode) {
+        M.getContext().setDiscardValueNames(discard);
+        return false;
+      }
+    }
+
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << " pre fix: " << M << "\n";
     fixup(M);
-    auto discard = M.getContext().shouldDiscardValueNames();
-    M.getContext().setDiscardValueNames(false);
     if (getenv("DEBUG_REACTANT"))
       llvm::errs() << " post fix: " << M << "\n";
 
-    for (auto bin : gpubins) {
-      SMDiagnostic Err;
-      auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
-      auto mod2 = llvm::parseIRFile(bin + ".re_export", Err, M.getContext());
+    for (auto &mod2 : deviceMods) {
       if (!mod2) {
-        Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
+        llvm::errs() << "LLVMToMLIR: could not read the device module\n";
         exit(1);
       }
 
@@ -656,6 +696,7 @@ public:
         // rename would turn enzyme_dup into enzyme_dup.2 and lose them.
         if (G.getName().contains("enzyme_"))
           continue;
+        G.setComdat(nullptr);
         G.setLinkage(GlobalValue::InternalLinkage);
       }
       if (getenv("DEBUG_REACTANT"))
@@ -698,6 +739,12 @@ public:
                 MF->setName("reactant$" + F22->getName());
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
+                // The stub keeps its comdat only as long as it keeps external
+                // linkage. Made internal inside one, the linker drops the
+                // section when another object wins the group and the calls
+                // this unit still makes to it have nowhere to go: "defined in
+                // discarded section".
+                F22->setComdat(nullptr);
                 F22->setLinkage(Function::LinkageTypes::InternalLinkage);
                 toInternalize.push_back(MF->getName().str());
                 CI->eraseFromParent();
@@ -712,6 +759,7 @@ public:
       M.getContext().setDiagnosticHandler(std::move(handler));
       for (auto name : toInternalize)
         if (auto F = M.getFunction(name)) {
+          F->setComdat(nullptr);
           F->setLinkage(Function::LinkageTypes::InternalLinkage);
         }
     }
@@ -841,15 +889,15 @@ public:
       if (const char *env = getenv("REACTANT_VERIFY_EACH"))
         verifyEach = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
-      .dataflow = DataFlowActivity.getValue(),
-      .markReadonly = MarkReadOnly.getValue(),
-      .preADLowerAffine = PreADLowerAffine.getValue(),
-      .splitMultiResults = SplitMultiResults.getValue(),
-      .removeAtomics = RemoveAtomics.getValue(),
-      .sortBlockMemory = SortBlockMemory.getValue(),
-      .hoistLoopAllocations = HoistLoopAllocations.getValue(),
-      .lowerInvoke = lowerInvoke,
-      .verifyEach = verifyEach,
+        .dataflow = DataFlowActivity.getValue(),
+        .markReadonly = MarkReadOnly.getValue(),
+        .preADLowerAffine = PreADLowerAffine.getValue(),
+        .splitMultiResults = SplitMultiResults.getValue(),
+        .removeAtomics = RemoveAtomics.getValue(),
+        .sortBlockMemory = SortBlockMemory.getValue(),
+        .hoistLoopAllocations = HoistLoopAllocations.getValue(),
+        .lowerInvoke = lowerInvoke,
+        .verifyEach = verifyEach,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
@@ -993,19 +1041,26 @@ public:
   ExporterNewPM(std::string file) : firstfile(file) {}
 
   Result run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM) {
-    std::string filename = firstfile + ".re_export";
-
     auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
 
     std::error_code EC;
-    llvm::raw_fd_ostream file(filename, EC); //, llvm::sys::fs::OF_Text);
+    auto file = std::make_unique<llvm::raw_fd_ostream>(
+        reExportPath(firstfile, /*besideSource=*/true), EC);
 
     if (EC) {
-      llvm::errs() << "Error opening file: " << EC.message() << "\n";
-      exit(1);
+      // Not every source sits somewhere writable: cmake compiles the cuda
+      // toolkit's own link.stub, out of the toolkit's directory, for the
+      // device link step. Fall back to a temp file the host side names the
+      // same way.
+      file = std::make_unique<llvm::raw_fd_ostream>(
+          reExportPath(firstfile, /*besideSource=*/false), EC);
+      if (EC) {
+        llvm::errs() << "Error opening file: " << EC.message() << "\n";
+        exit(1);
+      }
     }
 
-    file << M;
+    *file << M;
     definePoisonEnzymeCalls(M);
     return PreservedAnalyses::all();
   }
@@ -1021,8 +1076,14 @@ AnalysisKey ExporterNewPM::Key;
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file) {
 
+  // The raising pipeline has no custom derivative rules, so nothing here will
+  // ever resolve one. Consuming the registration globals still matters -- left
+  // standing they are a definition of the same name in every unit that saw the
+  // declaration -- but holding the functions they name external and uninlined
+  // only keeps dead code, and the kernels it launches, alive.
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
-    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true,
+                                  /*PreserveCustomRuleLinkage*/ false));
   };
 
   // We should register at vectorizer start for consistency, however,
@@ -1067,8 +1128,12 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
   // the function, and takes them away again -- left standing they are a
   // definition of the same name in every such unit, which is a link MFEM does
   // not get to the end of. registerExporter below asks for it in the same way.
+  // It has no custom derivative rules either, so nothing here will ever
+  // resolve one; holding the functions a rule names external and uninlined
+  // would only keep dead code, and the kernels it launches, alive.
   auto loadNVVM = [](ModulePassManager &MPM, OptimizationLevel) {
-    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true));
+    MPM.addPass(PreserveNVVMNewPM(/*Begin*/ true,
+                                  /*PreserveCustomRuleLinkage*/ false));
   };
   PB.registerPipelineStartEPCallback(loadNVVM);
   PB.registerFullLinkTimeOptimizationEarlyEPCallback(loadNVVM);
