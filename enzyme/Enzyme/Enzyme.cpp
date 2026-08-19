@@ -119,6 +119,7 @@ struct MLIRRoundTripOptions {
   bool lowerInvoke;
   bool verifyEach;
   bool parallelCanonicalize;
+  int lateSink;
 };
 #endif
 
@@ -184,6 +185,12 @@ llvm::cl::opt<bool> ParallelCanonicalize(
     cl::desc("Let the raising pipeline's canonicalize-parallel use the "
              "context's thread pool; off by default so every compile job "
              "of a parallel build does not spawn its own pool"));
+
+llvm::cl::opt<int> LateSink(
+    "reactant-late-sink", cl::init(2), cl::Hidden,
+    cl::desc("Mode for the GPU serializer's late sink of cheap address "
+             "computations: 0 disables it, 1 sinks only within the "
+             "defining loop, 2 also rematerializes into deeper loops"));
 
 namespace {
 
@@ -903,6 +910,10 @@ public:
     if (ParallelCanonicalize.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_CANON_PARALLEL"))
         parallelCanonicalize = env[0] && env[0] != '0';
+    int lateSink = LateSink.getValue();
+    if (LateSink.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_LATE_SINK"))
+        lateSink = atoi(env);
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -914,6 +925,7 @@ public:
         .lowerInvoke = lowerInvoke,
         .verifyEach = verifyEach,
         .parallelCanonicalize = parallelCanonicalize,
+        .lateSink = lateSink,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
