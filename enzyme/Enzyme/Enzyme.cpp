@@ -198,8 +198,22 @@ SmallVector<CallBase *> gatherCallers(Function *F) {
 
 void fixup(Module &M) {
 
+  // Map of runtime function, index of the entry fn
+  std::pair<const char *, int> runtime_fns[] = {
+      {"cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", 1},
+      {"cudaFuncGetAttributes", 1},
+      {"cudaFuncGetName", 1},
+      {"cudaFuncSetAttribute", 0},
+      {"cudaFuncSetCacheConfig", 0},
+      {"cudaLaunchKernelExC", 1},
+  };
+
   auto LaunchKernelFunc = M.getFunction(cudaLaunchSymbolName);
-  if (!LaunchKernelFunc)
+  bool AnyRuntimeUse = LaunchKernelFunc != nullptr;
+  for (auto &pair : runtime_fns)
+    if (M.getFunction(pair.first))
+      AnyRuntimeUse = true;
+  if (!AnyRuntimeUse)
     return;
 
   SmallPtrSet<Function *, 8> HostStubFuncs;
@@ -328,16 +342,6 @@ void fixup(Module &M) {
           assert(Res.isSuccess());
     }
   }
-
-  // Map of runtime function, index of the entry fn
-  std::pair<const char *, int> runtime_fns[] = {
-      {"cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", 1},
-      {"cudaFuncGetAttributes", 1},
-      {"cudaFuncGetName", 1},
-      {"cudaFuncSetAttribute", 0},
-      {"cudaFuncSetCacheConfig", 0},
-      {"cudaLaunchKernelExC", 1},
-  };
 
   // For all callers of the host-side stub function, that really should have
   // called the device version of the stub function, replace known cuda runtime
