@@ -118,6 +118,7 @@ struct MLIRRoundTripOptions {
   bool hoistLoopAllocations;
   bool lowerInvoke;
   bool verifyEach;
+  bool parallelCanonicalize;
 };
 #endif
 
@@ -177,6 +178,12 @@ llvm::cl::opt<bool> VerifyEach(
     cl::desc("Verify the module after every pass of the raising pipeline "
              "instead of once after it; per-pass verification is a third "
              "of the pipeline on large translation units"));
+
+llvm::cl::opt<bool> ParallelCanonicalize(
+    "reactant-parallel-canonicalize", cl::init(false), cl::Hidden,
+    cl::desc("Let the raising pipeline's canonicalize-parallel use the "
+             "context's thread pool; off by default so every compile job "
+             "of a parallel build does not spawn its own pool"));
 
 namespace {
 
@@ -892,6 +899,10 @@ public:
     if (VerifyEach.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_VERIFY_EACH"))
         verifyEach = env[0] && env[0] != '0';
+    bool parallelCanonicalize = ParallelCanonicalize.getValue();
+    if (ParallelCanonicalize.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_CANON_PARALLEL"))
+        parallelCanonicalize = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -902,6 +913,7 @@ public:
         .hoistLoopAllocations = HoistLoopAllocations.getValue(),
         .lowerInvoke = lowerInvoke,
         .verifyEach = verifyEach,
+        .parallelCanonicalize = parallelCanonicalize,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
