@@ -277,6 +277,8 @@ void fixup(Module &M) {
     // This is a declaration of the new device-function we will use. It is empty because it will be replaced by the
     // device function of the corresponding name, during subsequent linking
     auto NewFn = M.getOrInsertFunction(("reactant$" + StubFunc->getName()).str(), StubFunc->getFunctionType(), StubFunc->getAttributes());
+    if (auto *NF = dyn_cast<Function>(NewFn.getCallee()))
+      NF->addFnAttr("polygeist.host_symbol", StubFunc->getName());
     
     auto GridDimX = Builder.CreateTrunc(GridDim1, Builder.getInt32Ty());
     auto GridDimY = Builder.CreateLShr(
@@ -407,6 +409,8 @@ void fixup(Module &M) {
         auto NewFn = M.getOrInsertFunction(
             ("reactant$" + StubFunc->getName()).str(),
             StubFunc->getFunctionType(), StubFunc->getAttributes());
+        if (auto *NF = dyn_cast<Function>(NewFn.getCallee()))
+          NF->addFnAttr("polygeist.host_symbol", StubFunc->getName());
         CI->setArgOperand(pair.second, NewFn.getCallee());
       }
     }
@@ -755,6 +759,9 @@ public:
                 if (MF->isDeclaration())
                   continue;
                 MF->setName("reactant$" + F22->getName());
+                // Record which host symbol this kernel was registered for, so
+                // later stages need not infer it from the name.
+                MF->addFnAttr("polygeist.host_symbol", F22->getName());
                 MF->setCallingConv(llvm::CallingConv::C);
                 MF->setLinkage(Function::LinkageTypes::LinkOnceODRLinkage);
                 // The stub keeps its comdat only as long as it keeps external
