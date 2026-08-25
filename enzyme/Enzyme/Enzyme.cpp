@@ -610,34 +610,21 @@ public:
     auto discard = M.getContext().shouldDiscardValueNames();
     M.getContext().setDiscardValueNames(false);
 
-    // Nothing to raise if the device side defined nothing: cmake compiles the
-    // cuda toolkit's link.stub for its device link step, and that stub only
-    // carries the fatbin the real translation units produced. Running the
-    // round trip over it would emit the stub's module asm a second time.
     SmallVector<std::unique_ptr<Module>> deviceMods;
-    {
-      bool anyDeviceCode = false;
-      for (auto bin : gpubins) {
-        SMDiagnostic Err;
-        auto path = reExportPath(bin, /*besideSource=*/true);
-        auto mod2 = llvm::parseIRFile(path, Err, M.getContext());
-        if (!mod2) {
-          path = reExportPath(bin, /*besideSource=*/false);
-          mod2 = llvm::parseIRFile(path, Err, M.getContext());
-        }
-        if (getenv("DEBUG_REACTANT"))
-          llvm::errs() << " device module " << path << ": "
-                       << (mod2 ? (mod2->empty() ? "empty" : "present")
-                                : Err.getMessage())
-                       << "\n";
-        if (mod2 && !mod2->empty())
-          anyDeviceCode = true;
-        deviceMods.emplace_back(std::move(mod2));
+    for (auto bin : gpubins) {
+      SMDiagnostic Err;
+      auto path = reExportPath(bin, /*besideSource=*/true);
+      auto mod2 = llvm::parseIRFile(path, Err, M.getContext());
+      if (!mod2) {
+        path = reExportPath(bin, /*besideSource=*/false);
+        mod2 = llvm::parseIRFile(path, Err, M.getContext());
       }
-      if (!gpubins.empty() && !anyDeviceCode) {
-        M.getContext().setDiscardValueNames(discard);
-        return false;
-      }
+      if (getenv("DEBUG_REACTANT"))
+        llvm::errs() << " device module " << path << ": "
+                     << (mod2 ? (mod2->empty() ? "empty" : "present")
+                              : Err.getMessage())
+                     << "\n";
+      deviceMods.emplace_back(std::move(mod2));
     }
 
     if (getenv("DEBUG_REACTANT"))
@@ -976,6 +963,11 @@ public:
     M.getAliasList().clear();
     M.getIFuncList().clear();
     M.getComdatSymbolTable().clear();
+    // The round trip preserved the module asm (a stub translation unit is
+    // nothing but its fatbin asm), and the linker below appends the source
+    // module's asm to whatever remains here: keeping ours would define
+    // fatbinData twice.
+    M.removeModuleInlineAsm();
 
     llvm::SMDiagnostic Err;
     auto llvmModule = llvm::parseIR(
