@@ -194,6 +194,14 @@ public:
                         std::to_string(ENZYME_VERSION_MINOR));
     Builder.defineMacro("ENZYME_VERSION_PATCH",
                         std::to_string(ENZYME_VERSION_PATCH));
+    Builder.defineMacro("REACTANT_BACKEND",
+                        "\"" + ReactantBackend.getValue() + "\"");
+    StringRef rbackend = ReactantBackend.getValue();
+    if (rbackend.starts_with("xla")) {
+      StringRef device = rbackend.drop_front(3);
+      device.consume_front("-");
+      Builder.defineMacro("REACTANT_XLA_BACKEND", "\"" + device.str() + "\"");
+    }
     CI.getPreprocessor().setPredefines(Predefines.str());
 
     auto baseFS = &CI.getFileManager().getVirtualFileSystem();
