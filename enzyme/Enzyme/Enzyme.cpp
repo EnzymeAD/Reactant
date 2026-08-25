@@ -39,6 +39,7 @@
 #if LLVM_VERSION_MAJOR >= 16
 #define private public
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ScalarEvolutionExpander.h"
 #undef private
 #else
@@ -421,7 +422,19 @@ void fixup(Module &M) {
   // from cudaLaunchFunc earlier. However, these functions still represent a stack of data transfers.
   // We do an extremely primitive form of mem2reg for the push/pop so we can actually see through
   // the invocation and figure out which arguments map where.
-  
+
+  // The push/pop pairing below requires the pop to post-dominate the push,
+  // and in exception-aware code both come in as invokes whose unwind edge
+  // escapes to a landing pad, which defeats that. Neither function can
+  // throw, so lower their invokes to calls first.
+  for (auto name : {cudaPushConfigName, cudaPopConfigName})
+    if (Function *F = M.getFunction(name)) {
+      F->setDoesNotThrow();
+      for (CallBase *CB : gatherCallers(F))
+        if (auto *II = dyn_cast<InvokeInst>(CB))
+          changeToCall(II);
+    }
+
   DenseMap<Function *, SetVector<CallBase*>> Pushes;
   if (auto PushConfigFunc = M.getFunction(cudaPushConfigName)) {
     for (CallBase *CI : gatherCallers(PushConfigFunc)) {
