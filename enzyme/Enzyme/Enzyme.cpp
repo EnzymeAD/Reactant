@@ -303,6 +303,10 @@ void fixup(Module &M) {
     auto MlirLaunchFunc = M.getOrInsertFunction(
         "__mlir_cuda_caller_phase2",
         FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
+    // The stub inliner otherwise rewrites this call into an invoke when the
+    // stub was invoked inside an exception scope; the launcher never unwinds.
+    if (auto *LF = dyn_cast<Function>(MlirLaunchFunc.getCallee()))
+      LF->addFnAttr(Attribute::NoUnwind);
 
     Builder.CreateCall(MlirLaunchFunc, Args);
     HostStubFuncs.insert(StubFunc);
@@ -794,7 +798,10 @@ public:
 
     if (auto F = M.getFunction("__mlir_cuda_caller_phase2")) {
       for (auto U : make_early_inc_range(F->users())) {
-        auto CI = cast<CallInst>(U);
+        // The stub inliner rewrites the phase2 call into an invoke when the
+        // stub was invoked inside an exception scope (belt-and-braces: the
+        // nounwind attribute at creation should prevent this).
+        auto CI = cast<CallBase>(U);
         SmallVector<Value *> args;
         for (auto &arg : CI->args()) {
           args.push_back(arg.get());
@@ -821,6 +828,10 @@ public:
             FunctionType::get(Type::getVoidTy(M.getContext()), {}, true));
 
         B.CreateCall(MlirLaunchFunc, args);
+        if (auto II = dyn_cast<InvokeInst>(CI)) {
+          B.CreateBr(II->getNormalDest());
+          II->getUnwindDest()->removePredecessor(II->getParent());
+        }
         CI->eraseFromParent();
       }
     }
