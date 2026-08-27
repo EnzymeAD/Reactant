@@ -1002,6 +1002,17 @@ public:
       Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
       exit(1);
     }
+    // Functions raised out of the device module keep their NVPTX target
+    // attributes; the host backend rejects sm_* CPUs outright.
+    for (llvm::Function &F : *llvmModule) {
+      if (F.hasFnAttribute("target-cpu") &&
+          F.getFnAttribute("target-cpu").getValueAsString().starts_with(
+              "sm_")) {
+        F.removeFnAttr("target-cpu");
+        F.removeFnAttr("target-features");
+        F.removeFnAttr("tune-cpu");
+      }
+    }
     auto handler = M.getContext().getDiagnosticHandler();
     Linker L(M);
     L.linkInModule(std::move(llvmModule), Linker::Flags::OverrideFromSrc);
