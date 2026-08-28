@@ -1005,9 +1005,17 @@ public:
     // Functions raised out of the device module keep their NVPTX target
     // attributes; the host backend rejects sm_* CPUs outright.
     for (llvm::Function &F : *llvmModule) {
-      if (F.hasFnAttribute("target-cpu") &&
-          F.getFnAttribute("target-cpu").getValueAsString().starts_with(
-              "sm_")) {
+      bool nvAttrs =
+          F.hasFnAttribute("target-cpu") &&
+          F.getFnAttribute("target-cpu").getValueAsString().starts_with("sm_");
+      // A function can also carry only the NVPTX feature string, which
+      // leaves the host backend on a subtarget without 64-bit support.
+      if (!nvAttrs && F.hasFnAttribute("target-features")) {
+        auto feats =
+            F.getFnAttribute("target-features").getValueAsString();
+        nvAttrs = feats.contains("+ptx") || feats.contains("sm_");
+      }
+      if (nvAttrs) {
         F.removeFnAttr("target-cpu");
         F.removeFnAttr("target-features");
         F.removeFnAttr("tune-cpu");
