@@ -19,7 +19,7 @@ cc_library(
             "Enzyme/*.cpp",
             "Enzyme/Clang/EnzymeClang.cpp",
         ],
-        exclude = ["Enzyme/eopt.cpp"],
+        exclude = ["Enzyme/ropt.cpp"],
     ),
     hdrs = glob([
         "Enzyme/*.h",
@@ -76,6 +76,17 @@ expand_template(
     out = "reactant-clang-driver.cpp",
     substitutions = {"@TOOL_NAME@": "clang", "@INITLLVM_ARGS@": ", /*InstallPipeSignalExitHandler=*/true, /*NeedsPOSIXUtilitySignalHandling=*/true"},
     template = "@llvm-project//llvm:cmake/modules/llvm-driver-template.cpp.in",
+)
+
+cc_binary(
+    name = "reactant-opt",
+    srcs = ["Enzyme/ropt.cpp"],
+    deps = [
+        ":ReactantStatic",
+        "@llvm-project//llvm:Passes",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:opt-driver",
+    ],
 )
 
 cc_binary(
