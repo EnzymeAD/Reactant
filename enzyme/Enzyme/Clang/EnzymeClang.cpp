@@ -83,7 +83,7 @@ protected:
   }
 
   PluginASTAction::ActionType getActionType() override {
-    return AddBeforeMainAction;
+    return CmdlineBeforeMainAction;
   }
 };
 
