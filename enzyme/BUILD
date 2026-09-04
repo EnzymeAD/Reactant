@@ -55,6 +55,7 @@ cc_library(
         "@llvm-project//llvm:CodeGen",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Demangle",
+        "@llvm-project//llvm:FrontendOpenMP",
         "@llvm-project//llvm:IPO",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:InstCombine",
@@ -100,6 +101,7 @@ cc_binary(
     deps = [
         ":ReactantStatic",
         "@llvm-project//clang:clang-driver",
+        "@llvm-project//llvm:FrontendOpenMP",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -135,7 +137,10 @@ genrule(
 
 copy_clang_resource_dir(
     name = "reactant-clang-resource",
-    srcs = ["@llvm-project//clang:builtin_headers_gen"],
+    srcs = [
+        "@llvm-project//clang:builtin_headers_gen",
+        "@llvm_openmp_headers//:omp_headers_staged",
+    ],
 )
 
 exports_files(["run_lit.sh"])
