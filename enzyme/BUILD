@@ -19,7 +19,7 @@ cc_library(
             "Enzyme/*.cpp",
             "Enzyme/Clang/EnzymeClang.cpp",
         ],
-        exclude = ["Enzyme/eopt.cpp"],
+        exclude = ["Enzyme/ropt.cpp"],
     ),
     hdrs = glob([
         "Enzyme/*.h",
@@ -55,6 +55,7 @@ cc_library(
         "@llvm-project//llvm:CodeGen",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Demangle",
+        "@llvm-project//llvm:FrontendOpenMP",
         "@llvm-project//llvm:IPO",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:InstCombine",
@@ -79,6 +80,17 @@ expand_template(
 )
 
 cc_binary(
+    name = "reactant-opt",
+    srcs = ["Enzyme/ropt.cpp"],
+    deps = [
+        ":ReactantStatic",
+        "@llvm-project//llvm:Passes",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:opt-driver",
+    ],
+)
+
+cc_binary(
     name = "reactant-clang",
     srcs = ["reactant-clang-driver.cpp"],
     copts = [
@@ -89,6 +101,7 @@ cc_binary(
     deps = [
         ":ReactantStatic",
         "@llvm-project//clang:clang-driver",
+        "@llvm-project//llvm:FrontendOpenMP",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -124,7 +137,10 @@ genrule(
 
 copy_clang_resource_dir(
     name = "reactant-clang-resource",
-    srcs = ["@llvm-project//clang:builtin_headers_gen"],
+    srcs = [
+        "@llvm-project//clang:builtin_headers_gen",
+        "@llvm_openmp_headers//:omp_headers_staged",
+    ],
 )
 
 exports_files(["run_lit.sh"])
