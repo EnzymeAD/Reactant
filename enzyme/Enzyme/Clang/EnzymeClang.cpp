@@ -55,13 +55,13 @@ extern llvm::cl::opt<std::string> ReactantBackend;
 
 std::vector<std::string> GlobalOptimizationRules;
 
-struct ByrefGlobalInfo {
+struct TesseraArgTypeGlobalInfo {
   unsigned idx;
   QualType type;
   SourceLocation loc;
 };
 
-static std::vector<ByrefGlobalInfo> ByrefGlobals;
+static std::vector<TesseraArgTypeGlobalInfo> TesseraArgTypeGlobals;
 
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
@@ -108,12 +108,13 @@ static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
   }
 }
 
-static void emitByrefGlobals(Sema &S, std::vector<ByrefGlobalInfo> &Globals) {
+static void
+emitTesseraArgTypeGlobals(Sema &S,
+                          std::vector<TesseraArgTypeGlobalInfo> &Globals) {
   auto &AST = S.getASTContext();
   DeclContext *declCtx = AST.getTranslationUnitDecl();
   for (auto &info : Globals) {
-    auto &Id =
-        AST.Idents.get("__tessera_byref_arg_type_" + std::to_string(info.idx));
+    auto &Id = AST.Idents.get("__tessera_arg_type_" + std::to_string(info.idx));
     auto *VD = VarDecl::Create(AST, declCtx, info.loc, info.loc, &Id, info.type,
                                nullptr, SC_Static);
     VD->setImplicit(true);
@@ -246,7 +247,7 @@ public:
   void HandleTranslationUnit(ASTContext &Context) override {
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
-    emitByrefGlobals(S, ByrefGlobals);
+    emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
   }
 };
 
@@ -634,21 +635,25 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
     return ParsedAttrInfo::AttributeNotApplied;
   }
 
-  // Scan for byref positions
+  // Scan for val=in, val=out, and val=inout argument positions
   StringRef opStr = Literal->getString();
+  bool hasArgList = opStr.contains('(');
   StringRef argList = opStr.slice(opStr.find('(') + 1, opStr.find(')'));
-  SmallVector<unsigned> byrefPositions;
+  SmallVector<unsigned> positionsToLift;
+  unsigned numListedArgs = 0;
   if (!argList.trim().empty()) {
     SmallVector<StringRef> argParts;
     argList.split(argParts, ',');
+    numListedArgs = argParts.size();
     for (auto [idx, arg] : llvm::enumerate(argParts)) {
       arg = arg.trim();
-      if (arg.contains(":byref") || arg.contains(": byref"))
-        byrefPositions.push_back(idx);
+      StringRef marker = arg.split(':').second.trim();
+      if (marker.starts_with("val="))
+        positionsToLift.push_back(idx);
     }
   }
 
-  // Emit a global for each byref parameter
+  // Emit a global for each marked parameter
   auto FD = cast<FunctionDecl>(D);
   DeclContext *declCtx = D->getDeclContext();
   for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
@@ -659,27 +664,61 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
   auto params = FD->parameters();
   auto loc = FD->getLocation();
 
-  static unsigned globalCounter = 0;
-  SmallVector<unsigned> byrefGlobalIndices;
+  // A non-static C++ member function receives the object as an implicit
+  // leading `this` pointer, which is argument 0 of the emitted LLVM function
+  // but is absent from FD->parameters(). Positions in the op string name the
+  // call's arguments, so `this` occupies position 0 and the explicit
+  // parameters shift over by one:
+  //
+  //   struct Mat {
+  //     [[tessera::op("mfem.mult(this:val=in, x, y:val=out)")]]
+  //     void Mult(const Vec &x, Vec &y) const;
+  //   };
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  bool hasImplicitThis = MD && MD->isInstance();
 
-  for (unsigned idx : byrefPositions) {
-    if (idx >= params.size())
-      continue;
-    auto *param = params[idx];
-    auto pointeeTy = param->getType();
-    if (pointeeTy->isPointerType() || pointeeTy->isReferenceType())
-      pointeeTy = (pointeeTy->getPointeeType());
-
-    unsigned thisIdx = globalCounter++;
-    byrefGlobalIndices.push_back(thisIdx);
-    ByrefGlobals.push_back({thisIdx, pointeeTy, loc});
+  // The lowering requires one entry in the arg list per function argument
+  // (`this` included).
+  unsigned numExpectedArgs = params.size() + (hasImplicitThis ? 1 : 0);
+  if (hasArgList && numListedArgs != numExpectedArgs) {
+    unsigned ID = S.getDiagnostics().getCustomDiagID(
+        DiagnosticsEngine::Warning,
+        "'%0' argument list names %1 argument(s) but %2 takes %3%4; positions "
+        "in the argument list must match the function's arguments one for one");
+    S.Diag(Attr.getLoc(), ID)
+        << attrName << numListedArgs << FD << numExpectedArgs
+        << (hasImplicitThis ? " (counting the implicit 'this')" : "");
   }
 
-  // Build annotation string: "tessera_op=eigen.inv(x:byref, y):3,4"
+  static unsigned globalCounter = 0;
+  SmallVector<unsigned> liftedArgGlobalIndices;
+
+  for (unsigned idx : positionsToLift) {
+    QualType pointeeTy;
+    if (hasImplicitThis && idx == 0) {
+      // The pointee of `this` is the (possibly const-qualified) class type.
+      pointeeTy = MD->getThisType()->getPointeeType();
+    } else {
+      unsigned paramIdx = idx - (hasImplicitThis ? 1 : 0);
+      if (paramIdx >= params.size())
+        continue;
+      pointeeTy = params[paramIdx]->getType();
+      if (pointeeTy->isPointerType() || pointeeTy->isReferenceType())
+        pointeeTy = (pointeeTy->getPointeeType());
+    }
+
+    pointeeTy = pointeeTy.getUnqualifiedType();
+
+    unsigned thisIdx = globalCounter++;
+    liftedArgGlobalIndices.push_back(thisIdx);
+    TesseraArgTypeGlobals.push_back({thisIdx, pointeeTy, loc});
+  }
+
+  // Build annotation string: "tessera_op=eigen.inv(x:val=in, y):3,4"
   std::string annotation = (attrName + "=" + opStr).str();
 
   // Parse remaining args representing sizes of function parameters
-  for (auto [i, idx] : llvm::enumerate(byrefGlobalIndices)) {
+  for (auto [i, idx] : llvm::enumerate(liftedArgGlobalIndices)) {
     annotation += (i == 0 ? ":globals=" : ",") + std::to_string(idx);
   }
 
