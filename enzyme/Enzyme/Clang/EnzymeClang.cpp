@@ -150,6 +150,10 @@ class EnzymePlugin final : public clang::ASTConsumer {
 
 public:
   EnzymePlugin(clang::CompilerInstance &CI) : CI(CI) {
+    // Allow the wrapper to act as a plain clang: skip registering the
+    // Reactant pass pipeline entirely.
+    if (getenv("NO_REACTANT_PLUGIN"))
+      return;
     // FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
     auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
