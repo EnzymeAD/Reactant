@@ -756,6 +756,73 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
                                                              "");
 
+struct PerfifyOpAttrInfo : public ParsedAttrInfo {
+  PerfifyOpAttrInfo() {
+    OptArgs = 1;
+    // GNU-style __attribute__((perfify_op("..."))) and C++/C2x-style
+    // [[perfify_op("...")]] supported.
+    static constexpr Spelling S[] = {
+        {ParsedAttr::AS_GNU, "perfify_op"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "perfify_op"},
+#else
+        {ParsedAttr::AS_C2x, "perfify_op"},
+#endif
+        {ParsedAttr::AS_CXX11, "perfify_op"},
+        {ParsedAttr::AS_CXX11, "perfify::op"}};
+    Spellings = S;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    if (Attr.getNumArgs() == 0 && Attr.isCXX11Attribute() &&
+        Attr.hasScope()) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "the scoped C++11 spelling [[perfify::op]] cannot carry an "
+          "argument list; write [[perfify_op(\"...\")]] or "
+          "__attribute__((perfify_op(\"...\"))) instead");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    if (Attr.getNumArgs() != 1) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'perfify_op' attribute requires a single string argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+    if (!Literal) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error, "argument to 'perfify_op' "
+                                    "attribute must be a string literal");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    D->addAttr(AnnotateAttr::Create(
+        S.Context, ("perfify_op=" + Literal->getString()).str(), nullptr, 0,
+        Attr.getRange()));
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<PerfifyOpAttrInfo>
+    PerfifyOpX("perfify_op", "");
+
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
     OptArgs = 1;
