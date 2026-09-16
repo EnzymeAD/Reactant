@@ -87,6 +87,9 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Transforms/IPO/GlobalOpt.h"
 
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -706,6 +709,8 @@ public:
       for (auto &F : *mod2) {
         if (!F.empty())
           F.setLinkage(Function::LinkageTypes::InternalLinkage);
+        // Device code has no exception handling, so nothing in it unwinds.
+        F.setDoesNotThrow();
       }
       // The device module carries its own copies of globals the host also
       // defines -- statics in headers compiled for both sides. They are
@@ -900,6 +905,38 @@ public:
       PB.registerLoopAnalyses(LAM);
       PB.registerCGSCCAnalyses(CGAM);
       PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+      // The MLIR inliner refuses an invoke call site, and the host invokes
+      // the linkonce_odr functions it shares with the device: leaves that
+      // LLVM never marks nounwind, since it infers nothing on definitions
+      // another unit might supersede. The raising pipeline inlines these
+      // bodies as they are, so derive nounwind from them bottom-up and let
+      // simplifycfg turn invokes of such callees into calls.
+      CallGraph CG(M);
+      for (auto I = scc_begin(&CG); !I.isAtEnd(); ++I) {
+        SmallVector<Function *> Fns;
+        for (CallGraphNode *N : *I)
+          if (Function *F = N->getFunction())
+            if (!F->isDeclaration() && !F->doesNotThrow())
+              Fns.push_back(F);
+        if (Fns.empty())
+          continue;
+        for (Function *F : Fns)
+          F->setDoesNotThrow();
+        bool NoUnwind = llvm::all_of(Fns, [](Function *F) {
+          return llvm::none_of(instructions(*F),
+                               [](Instruction &I) { return I.mayThrow(); });
+        });
+        if (!NoUnwind)
+          for (Function *F : Fns)
+            F->removeFnAttr(Attribute::NoUnwind);
+      }
+      for (Function &F : M) {
+        if (F.isDeclaration())
+          continue;
+        auto PA = SimplifyCFGPass(SimplifyCFGOptions()).run(F, FAM);
+        FAM.invalidate(F, PA);
+      }
 
       GlobalOptPass().run(M, MAM);
     }
