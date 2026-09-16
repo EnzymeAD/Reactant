@@ -288,3 +288,23 @@ load("@hedron_compile_commands//:workspace_setup_transitive_transitive.bzl", "he
 hedron_compile_commands_setup_transitive_transitive()
 load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
+http_archive(
+    name = "bazel_features_1_47",
+    # 1.47.1 is the floor required by rules_cc_autoconf (used by rules_foreign_cc
+    # 0.16.0's pkgconf toolchain); matches rules_foreign_cc's own pin.
+    sha256 = "6a727a78c0134b1b912c97c0937e1c956f35775934ae3e1f4af4156f8d5d1ff4",
+    strip_prefix = "bazel_features-1.47.1",
+    url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.47.1/bazel_features-v1.47.1.tar.gz",
+)
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+
+# Use the prebuilt cmake/ninja toolchains only: the source-built toolchains
+# (pkgconf/m4/make via rules_cc_autoconf) require
+# --incompatible_enable_cc_toolchain_resolution, which this build disables.
+rules_foreign_cc_dependencies(register_built_tools = False)
+
+
+load("@enzyme_ad//third_party/z3:workspace.bzl", z3_workspace = "repo")
+z3_workspace()
