@@ -131,6 +131,8 @@ llvm("llvm-raw")
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 llvm_configure(name = "llvm-project", targets = LLVM_TARGETS)
 
+load("//:llvm_openmp_repo.bzl", "llvm_openmp_headers")
+llvm_openmp_headers(name = "llvm_openmp_headers")
 
 load("@xla//:workspace1.bzl", "xla_workspace1")
 xla_workspace1()
