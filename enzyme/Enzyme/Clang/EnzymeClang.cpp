@@ -172,10 +172,10 @@ public:
           [=](llvm::PassBuilder &PB) { registerExporter(PB, file); });
     } else {
       std::vector<std::string> gpubins;
-      if (CGOpts.CudaGpuBinaryFileName.size()) {
+      if (CGOpts.OffloadBinaryToEmbedFile.size()) {
         if (inFile.size())
           gpubins.push_back(inFile);
-        // gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
+        // gpubins.push_back(CGOpts.OffloadBinaryToEmbedFile);
       }
       std::string file = CI.getFrontendOpts().OutputFile;
       CGOpts.PassBuilderCallbacks.push_back(
