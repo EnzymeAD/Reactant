@@ -64,10 +64,22 @@ jobs:
         ref: '0220c07a94012b9dce9250addac6a8ee1f674b21'
         path: 'llvm-project'
 
+    # Build the Enzyme-JAX this checkout pins (enzyme/workspace.bzl), not
+    # whatever Enzyme-JAX main is at the moment: the bazel jobs build the
+    # pinned commit, and an unrelated breakage on main should not fail this one.
+    - name: Read pinned Enzyme-JAX commit
+      id: enzymexla
+      shell: bash
+      run: |
+        commit=$(sed -nE 's/^ENZYMEXLA_COMMIT = "([0-9a-f]+)"/\1/p' Reactant/enzyme/workspace.bzl)
+        test -n "$commit"
+        echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
     - name: Check out Enzyme-JAX
       uses: actions/checkout@v7
       with:
         repository: 'EnzymeAD/Enzyme-JAX'
+        ref: ${{ steps.enzymexla.outputs.commit }}
         path: 'Enzyme-JAX'
 
     - name: Check out Enzyme GPU Tests
