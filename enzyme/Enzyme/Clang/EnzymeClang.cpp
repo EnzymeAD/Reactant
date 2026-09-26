@@ -23,6 +23,8 @@
 //===----------------------------------------------------------------------===//
 
 #include <limits>
+#include <type_traits>
+#include <utility>
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
@@ -52,6 +54,24 @@ constexpr auto StructKind = clang::TagTypeKind::TTK_Struct;
 #endif
 
 extern llvm::cl::opt<std::string> ReactantBackend;
+
+// clang renamed CodeGenOptions::CudaGpuBinaryFileName to
+// OffloadBinaryToEmbedFile (llvm/llvm-project#216090) within one major
+// version, so the member's presence rather than LLVM_VERSION_MAJOR decides.
+template <typename T, typename = void>
+struct HasOffloadBinaryToEmbedFile : std::false_type {};
+template <typename T>
+struct HasOffloadBinaryToEmbedFile<
+    T, std::void_t<decltype(std::declval<T &>().OffloadBinaryToEmbedFile)>>
+    : std::true_type {};
+
+template <typename T>
+static const std::string &offloadBinaryToEmbedFile(const T &Opts) {
+  if constexpr (HasOffloadBinaryToEmbedFile<T>::value)
+    return Opts.OffloadBinaryToEmbedFile;
+  else
+    return Opts.CudaGpuBinaryFileName;
+}
 
 std::vector<std::string> GlobalOptimizationRules;
 
@@ -172,10 +192,10 @@ public:
           [=](llvm::PassBuilder &PB) { registerExporter(PB, file); });
     } else {
       std::vector<std::string> gpubins;
-      if (CGOpts.CudaGpuBinaryFileName.size()) {
+      if (offloadBinaryToEmbedFile(CGOpts).size()) {
         if (inFile.size())
           gpubins.push_back(inFile);
-        // gpubins.push_back(CGOpts.CudaGpuBinaryFileName);
+        // gpubins.push_back(offloadBinaryToEmbedFile(CGOpts));
       }
       std::string file = CI.getFrontendOpts().OutputFile;
       CGOpts.PassBuilderCallbacks.push_back(
