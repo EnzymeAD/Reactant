@@ -89,6 +89,10 @@ struct TesseraArgTypeGlobalInfo {
 
 static std::vector<TesseraArgTypeGlobalInfo> TesseraArgTypeGlobals;
 
+// Tessera ops whose declaration must be forced into the module; see
+// emitTesseraOpRefGlobals.
+static std::vector<FunctionDecl *> TesseraOpFunctions;
+
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
 protected:
@@ -146,6 +150,74 @@ emitTesseraArgTypeGlobals(Sema &S,
     VD->setImplicit(true);
     VD->setInit(new (AST) ImplicitValueInitExpr(info.type));
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+    declCtx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
+
+// Emit a used global holding the function's address so that the declaration is
+// created and clang emits the tessera annotation..
+static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
+  auto &AST = S.getASTContext();
+  DeclContext *declCtx = AST.getTranslationUnitDecl();
+  unsigned counter = 0;
+
+  for (auto *FD : Fns) {
+    // A definition in this TU is already pinned by the `used` attribute.
+    if (FD->hasBody() || FD->isDeleted())
+      continue;
+    // An uninstantiated template has no address to take.
+    if (FD->getDescribedFunctionTemplate() || FD->isDependentContext())
+      continue;
+
+    const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+    // Constructors and destructors have no address, and a pointer to a virtual
+    // member is a vtable index rather than a reference to the function, so
+    // neither forces the declaration into the module.
+    if (MD && (isa<CXXConstructorDecl>(MD) || isa<CXXDestructorDecl>(MD) ||
+               MD->isVirtual())) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Warning,
+          "tessera op %0 has no definition here and cannot be emitted "
+          "automatically; a call to it is needed for a tessera rewrite to "
+          "reference it");
+      S.Diag(FD->getLocation(), ID) << FD;
+      continue;
+    }
+
+    auto loc = FD->getLocation();
+    QualType refTy;
+    if (MD && MD->isInstance()) {
+#if LLVM_VERSION_MAJOR >= 23
+      refTy = AST.getMemberPointerType(
+          FD->getType(), /*Qualifier=*/std::nullopt, MD->getParent());
+#elif LLVM_VERSION_MAJOR >= 21
+      refTy = AST.getMemberPointerType(FD->getType(), /*Qualifier=*/nullptr,
+                                       MD->getParent());
+#else
+      refTy = AST.getMemberPointerType(FD->getType(),
+                                       MD->getParent()->getTypeForDecl());
+#endif
+    } else {
+      refTy = AST.getPointerType(FD->getType());
+    }
+
+    // static <ptr type> __tessera_op_ref_N __attribute__((used)) = &f;
+    auto *DR = DeclRefExpr::Create(
+        AST, NestedNameSpecifierLoc(), loc, cast<ValueDecl>(FD), false, loc,
+        FD->getType(), ExprValueKind::VK_LValue, cast<NamedDecl>(FD), nullptr);
+    auto *Ref = UnaryOperator::Create(
+        AST, DR, UnaryOperatorKind::UO_AddrOf, refTy, ExprValueKind::VK_PRValue,
+        ExprObjectKind::OK_Ordinary, loc,
+        /*CanOverflow=*/false, FPOptionsOverride());
+
+    auto &Id = AST.Idents.get("__tessera_op_ref_" + std::to_string(counter++));
+    auto *VD =
+        VarDecl::Create(AST, declCtx, loc, loc, &Id, refTy, nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(Ref);
+    VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+    S.MarkFunctionReferenced(loc, FD);
     declCtx->addDecl(VD);
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
   }
@@ -278,6 +350,7 @@ public:
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
     emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
+    emitTesseraOpRefGlobals(S, TesseraOpFunctions);
   }
 };
 
@@ -752,8 +825,11 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
     annotation += (i == 0 ? ":globals=" : ",") + std::to_string(idx);
   }
 
+  auto &AST = S.getASTContext();
   D->addAttr(
-      AnnotateAttr::Create(S.Context, annotation, nullptr, 0, Attr.getRange()));
+      AnnotateAttr::Create(AST, annotation, nullptr, 0, Attr.getRange()));
+  D->addAttr(clang::UsedAttr::CreateImplicit(AST));
+  TesseraOpFunctions.push_back(FD);
   return ParsedAttrInfo::AttributeApplied;
 }
 
