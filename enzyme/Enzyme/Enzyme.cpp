@@ -124,6 +124,7 @@ struct MLIRRoundTripOptions {
   bool verifyEach;
   bool parallelCanonicalize;
   int lateSink;
+  bool exportMLIROnly;
 };
 #endif
 
@@ -195,6 +196,12 @@ llvm::cl::opt<int> LateSink(
     cl::desc("Mode for the GPU serializer's late sink of cheap address "
              "computations: 0 disables it, 1 sinks only within the "
              "defining loop, 2 also rematerializes into deeper loops"));
+
+llvm::cl::opt<bool> ExportMLIROnly(
+    "reactant-export-mlir-only", cl::init(false), cl::Hidden,
+    cl::desc("Write the raised MLIR to stdout and leave the module alone "
+             "rather than translating it back to LLVM IR; pass "
+             "-disable-output so nothing else writes stdout"));
 
 namespace {
 
@@ -981,6 +988,7 @@ public:
         .verifyEach = verifyEach,
         .parallelCanonicalize = parallelCanonicalize,
         .lateSink = lateSink,
+        .exportMLIROnly = ExportMLIROnly.getValue(),
     };
 
 #if REACTANT_USE_LINKED_RAISE 
@@ -1029,6 +1037,16 @@ public:
     // module's asm to whatever remains here: keeping ours would define
     // fatbinData twice.
     M.removeModuleInlineAsm();
+
+    // The round trip returned textual MLIR, which parseIR below cannot take.
+    // The module stays emptied: nothing after this pass has anything to
+    // optimize or codegen.
+    if (ExportMLIROnly) {
+      llvm::outs() << newMod;
+      llvm::outs().flush();
+      M.getContext().setDiscardValueNames(discard);
+      return changed;
+    }
 
     llvm::SMDiagnostic Err;
     auto llvmModule = llvm::parseIR(
