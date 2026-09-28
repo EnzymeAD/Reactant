@@ -924,15 +924,33 @@ static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
 //   [[tessera::preserves("SPD", "A", "B")]]
 //       the output is SPD whenever A and B both are: the return value, or the
 //       one parameter the tessera_op writes if it returns nothing
+//   [[tessera::readonly("A")]]
+//       the function does not change the object pointer A refers to
 //
-// A guarantee or assumption may state several facts at once, one per string.
-// Parameters are named as written, or by position; `this` names the object of
-// a member function. Positions count as tessera_op argument lists do, `this`
-// first, so each fact becomes one annotation such as
-// "tessera_guarantees=SPD:arg2", and a preserves becomes
-// "tessera_preserves=SPD:0,1", which lift-tessera-annotations can line up with
-// argModes.
-enum class TesseraPropertyKind { Guarantees, Assumes, Preserves };
+// A guarantee on a pointer the function takes as it is -- a handle, such as a
+// PETSc Mat -- is about the object it refers to, from the call on:
+//
+//   PetscErrorCode FillCOO(Mat A, void *ctx)
+//       __attribute__((tessera_guarantees("SPD(A)")));
+//   PetscErrorCode MatMult(Mat A, Vec x, Vec y)
+//       __attribute__((tessera_readonly("A")));
+//
+// Then a later call given A can rely on it being SPD, as long as every call
+// given A in between is readonly in it.
+//
+// A guarantee or assumption may state several facts at once, one per string,
+// and a readonly may name several parameters. Parameters are named as
+// written, or by position; `this` names the object of a member function.
+// Positions count as tessera_op argument lists do, `this` first, so each fact
+// becomes one annotation such as "tessera_guarantees=SPD:arg2", a preserves
+// becomes "tessera_preserves=SPD:0,1", and a readonly "tessera_readonly=arg0",
+// which lift-tessera-annotations can line up with argModes.
+//
+// Only the GNU spelling __attribute__((tessera_guarantees(...))) and the
+// unscoped [[tessera_guarantees(...)]] keep their arguments; the scoped
+// [[tessera::guarantees(...)]] reaches the plugin with none, and is ignored
+// with a warning.
+enum class TesseraPropertyKind { Guarantees, Assumes, Preserves, Readonly };
 
 // A property name: letters, digits and underscores.
 static bool isTesseraPropertyName(StringRef name) {
@@ -982,10 +1000,11 @@ static ParsedAttrInfo::AttrHandling
 handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
                                TesseraPropertyKind kind) {
   bool isGuarantee = kind == TesseraPropertyKind::Guarantees;
-  StringRef attrName = isGuarantee ? "tessera::guarantees"
-                       : kind == TesseraPropertyKind::Assumes
-                           ? "tessera::assumes"
-                           : "tessera::preserves";
+  StringRef attrName =
+      isGuarantee                              ? "tessera::guarantees"
+      : kind == TesseraPropertyKind::Assumes   ? "tessera::assumes"
+      : kind == TesseraPropertyKind::Preserves ? "tessera::preserves"
+                                               : "tessera::readonly";
   // A malformed annotation is a mistake in what is known, not in the program,
   // so it only costs the facts it would have given: warn, and leave it out.
   auto warn = [&](const Twine &message) {
@@ -999,8 +1018,11 @@ handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
                        "\"SPD\" or \"SPD(M)\""
          : kind == TesseraPropertyKind::Assumes
              ? "'tessera::assumes' takes one or more facts such as \"SPD(M)\""
-             : "'tessera::preserves' takes a property name and the "
-               "parameters it is preserved from");
+         : kind == TesseraPropertyKind::Preserves
+             ? "'tessera::preserves' takes a property name and the "
+               "parameters it is preserved from"
+             : "'tessera::readonly' takes the pointer parameters the function "
+               "does not change the objects of");
     return ParsedAttrInfo::AttributeNotApplied;
   }
 
@@ -1039,10 +1061,37 @@ handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
     annotations.push_back(std::move(annotation));
   }
 
+  // Each parameter a readonly names stands on its own too: one it cannot
+  // name is left out, which only means calls are taken to change that object.
+  if (kind == TesseraPropertyKind::Readonly) {
+    const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+    unsigned thisOffset = MD && MD->isInstance() ? 1 : 0;
+    for (StringRef param : args) {
+      param = param.trim();
+      auto pos = getTesseraArgPosition(FD, param);
+      if (!pos) {
+        warn("'tessera::readonly' names '" + param +
+             "', which is not a parameter of '" + FD->getNameAsString() + "'");
+        continue;
+      }
+      if (param != "this" && *pos >= thisOffset) {
+        QualType type = FD->getParamDecl(*pos - thisOffset)->getType();
+        if (!type->isPointerType() && !type->isReferenceType()) {
+          warn("'tessera::readonly' names '" + param +
+               "', which is not a pointer or reference, so there is no "
+               "object to leave alone");
+          continue;
+        }
+      }
+      annotations.push_back(("tessera_readonly=arg" + Twine(*pos)).str());
+    }
+  }
+
   // Each argument of a guarantee or assumption is one fact, and stands on its
   // own, so a malformed one is left out and the rest are kept.
   for (StringRef text : args) {
-    if (kind == TesseraPropertyKind::Preserves)
+    if (kind == TesseraPropertyKind::Preserves ||
+        kind == TesseraPropertyKind::Readonly)
       break;
     StringRef property, param;
     if (!parseTesseraFact(text, property, param)) {
@@ -1116,9 +1165,9 @@ handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
     D->addAttr(
         AnnotateAttr::Create(AST, annotation, nullptr, 0, Attr.getRange()));
   // A property is read off the call that produced a value, or off the
-  // parameters of the function that assumes it, so that call, or that
-  // function's own body, has to survive until tessera-apply-pdl runs; the
-  // pipeline inlines long before then.
+  // parameters of the function that assumes it, and a handle's off the calls
+  // given it, so that call, or that function's own body, has to survive until
+  // tessera-apply-pdl runs; the pipeline inlines long before then.
   if (!D->hasAttr<AlwaysInlineAttr>() && !D->hasAttr<NoInlineAttr>())
     D->addAttr(NoInlineAttr::CreateImplicit(AST));
   return ParsedAttrInfo::AttributeApplied;
@@ -1155,12 +1204,23 @@ struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
 #endif
         {ParsedAttr::AS_CXX11, "tessera_preserves"},
         {ParsedAttr::AS_CXX11, "tessera::preserves"}};
+    static constexpr Spelling ReadonlySpellings[] = {
+        {ParsedAttr::AS_GNU, "tessera_readonly"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "tessera_readonly"},
+#else
+        {ParsedAttr::AS_C2x, "tessera_readonly"},
+#endif
+        {ParsedAttr::AS_CXX11, "tessera_readonly"},
+        {ParsedAttr::AS_CXX11, "tessera::readonly"}};
     if constexpr (Kind == TesseraPropertyKind::Guarantees)
       Spellings = GuaranteesSpellings;
     else if constexpr (Kind == TesseraPropertyKind::Assumes)
       Spellings = AssumesSpellings;
-    else
+    else if constexpr (Kind == TesseraPropertyKind::Preserves)
       Spellings = PreservesSpellings;
+    else
+      Spellings = ReadonlySpellings;
   }
 
   bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
@@ -1189,6 +1249,9 @@ static ParsedAttrInfoRegistry::Add<
 static ParsedAttrInfoRegistry::Add<
     TesseraPropertyAttrInfo<TesseraPropertyKind::Assumes>>
     T5("tessera_assumes", "");
+static ParsedAttrInfoRegistry::Add<
+    TesseraPropertyAttrInfo<TesseraPropertyKind::Readonly>>
+    T6("tessera_readonly", "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
