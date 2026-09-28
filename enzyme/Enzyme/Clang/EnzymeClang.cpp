@@ -40,6 +40,7 @@
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "llvm/ADT/StringExtras.h"
 
 #include "Enzyme/Utils.h"
 
@@ -719,10 +720,13 @@ static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
 static ParsedAttrInfo::AttrHandling
 handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
                          StringRef attrName) {
+  // A malformed tessera annotation only costs the rewrites it would have
+  // allowed, so it is reported as a warning and left out, and the function
+  // compiles as though it were not there.
   if (Attr.getNumArgs() < 1) {
     unsigned ID = S.getDiagnostics().getCustomDiagID(
-        DiagnosticsEngine::Error,
-        "'%0' attribute requires at least a string argument");
+        DiagnosticsEngine::Warning,
+        "'%0' attribute requires at least a string argument; it is ignored");
     S.Diag(Attr.getLoc(), ID) << attrName;
     return ParsedAttrInfo::AttributeNotApplied;
   }
@@ -732,8 +736,8 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
   StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
   if (!Literal) {
     unsigned ID = S.getDiagnostics().getCustomDiagID(
-        DiagnosticsEngine::Error, "first argument to '%0' "
-                                  "attribute must be a string literal");
+        DiagnosticsEngine::Warning, "first argument to '%0' attribute must be "
+                                    "a string literal; it is ignored");
     S.Diag(Attr.getLoc(), ID) << attrName;
     return ParsedAttrInfo::AttributeNotApplied;
   }
@@ -783,14 +787,18 @@ handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
   // The lowering requires one entry in the arg list per function argument
   // (`this` included).
   unsigned numExpectedArgs = params.size() + (hasImplicitThis ? 1 : 0);
+  // Lifting a function whose argument list does not line up with it would
+  // produce a tessera.define that does not verify.
   if (hasArgList && numListedArgs != numExpectedArgs) {
     unsigned ID = S.getDiagnostics().getCustomDiagID(
         DiagnosticsEngine::Warning,
         "'%0' argument list names %1 argument(s) but %2 takes %3%4; positions "
-        "in the argument list must match the function's arguments one for one");
+        "in the argument list must match the function's arguments one for "
+        "one; it is ignored");
     S.Diag(Attr.getLoc(), ID)
         << attrName << numListedArgs << FD << numExpectedArgs
         << (hasImplicitThis ? " (counting the implicit 'this')" : "");
+    return ParsedAttrInfo::AttributeNotApplied;
   }
 
   static unsigned globalCounter = 0;
@@ -904,6 +912,283 @@ struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
 
 static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
                                                              "");
+
+// A property of a function's inputs or outputs: a name like "SPD" or
+// "symmetric" that a rule's condition can test, `if SPD(A), ...`.
+//
+//   [[tessera::guarantees("SPD")]]         the return value is always SPD
+//   [[tessera::guarantees("SPD(M)")]]      parameter M is always SPD once it
+//                                          returns
+//   [[tessera::assumes("SPD(A)", "symmetric(B)")]]
+//       A is always SPD and B always symmetric when the function is called
+//   [[tessera::preserves("SPD", "A", "B")]]
+//       the output is SPD whenever A and B both are: the return value, or the
+//       one parameter the tessera_op writes if it returns nothing
+//
+// A guarantee or assumption may state several facts at once, one per string.
+// Parameters are named as written, or by position; `this` names the object of
+// a member function. Positions count as tessera_op argument lists do, `this`
+// first, so each fact becomes one annotation such as
+// "tessera_guarantees=SPD:arg2", and a preserves becomes
+// "tessera_preserves=SPD:0,1", which lift-tessera-annotations can line up with
+// argModes.
+enum class TesseraPropertyKind { Guarantees, Assumes, Preserves };
+
+// A property name: letters, digits and underscores.
+static bool isTesseraPropertyName(StringRef name) {
+  return !name.empty() && llvm::all_of(name, [](char c) {
+    return llvm::isAlnum(c) || c == '_';
+  });
+}
+
+// Split a fact written "SPD(M)" into the property and the parameter. A bare
+// "SPD" has no parameter. Returns false if the text is neither form.
+static bool parseTesseraFact(StringRef text, StringRef &property,
+                             StringRef &param) {
+  text = text.trim();
+  size_t open = text.find('(');
+  if (open == StringRef::npos) {
+    property = text;
+    param = "";
+    return isTesseraPropertyName(property);
+  }
+  if (text.back() != ')')
+    return false;
+  property = text.take_front(open).trim();
+  param = text.drop_front(open + 1).drop_back().trim();
+  return isTesseraPropertyName(property) && !param.empty() &&
+         !param.contains('(') && !param.contains(')') && !param.contains(',');
+}
+
+// The tessera_op argument position a parameter name refers to.
+static std::optional<unsigned> getTesseraArgPosition(FunctionDecl *FD,
+                                                     StringRef name) {
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  bool hasImplicitThis = MD && MD->isInstance();
+  unsigned numArgs = FD->getNumParams() + (hasImplicitThis ? 1 : 0);
+  if (name == "this")
+    return hasImplicitThis ? std::optional<unsigned>(0) : std::nullopt;
+  unsigned position;
+  if (!name.getAsInteger(10, position))
+    return position < numArgs ? std::optional<unsigned>(position)
+                              : std::nullopt;
+  for (auto [i, param] : llvm::enumerate(FD->parameters()))
+    if (param->getName() == name)
+      return i + (hasImplicitThis ? 1 : 0);
+  return std::nullopt;
+}
+
+static ParsedAttrInfo::AttrHandling
+handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
+                               TesseraPropertyKind kind) {
+  bool isGuarantee = kind == TesseraPropertyKind::Guarantees;
+  StringRef attrName = isGuarantee ? "tessera::guarantees"
+                       : kind == TesseraPropertyKind::Assumes
+                           ? "tessera::assumes"
+                           : "tessera::preserves";
+  // A malformed annotation is a mistake in what is known, not in the program,
+  // so it only costs the facts it would have given: warn, and leave it out.
+  auto warn = [&](const Twine &message) {
+    unsigned ID = S.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Warning,
+                                                     "%0; it is ignored");
+    S.Diag(Attr.getLoc(), ID) << message.str();
+  };
+
+  if (Attr.getNumArgs() < (kind == TesseraPropertyKind::Preserves ? 2u : 1u)) {
+    warn(isGuarantee ? "'tessera::guarantees' takes one or more facts such as "
+                       "\"SPD\" or \"SPD(M)\""
+         : kind == TesseraPropertyKind::Assumes
+             ? "'tessera::assumes' takes one or more facts such as \"SPD(M)\""
+             : "'tessera::preserves' takes a property name and the "
+               "parameters it is preserved from");
+    return ParsedAttrInfo::AttributeNotApplied;
+  }
+
+  SmallVector<std::string> args;
+  for (unsigned i = 0, e = Attr.getNumArgs(); i != e; ++i) {
+    auto *Literal =
+        dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts());
+    if (!Literal) {
+      warn("arguments to '" + attrName + "' must be string literals");
+      return ParsedAttrInfo::AttributeNotApplied;
+    }
+    args.push_back(Literal->getString().str());
+  }
+
+  auto *FD = cast<FunctionDecl>(D);
+  SmallVector<std::string> annotations;
+  if (kind == TesseraPropertyKind::Preserves) {
+    // A preserves is used whole or not at all: leaving out an input it could
+    // not name would claim the property survives with fewer inputs having it.
+    StringRef property = args[0];
+    if (!isTesseraPropertyName(property)) {
+      warn("'" + property + "' is not a valid property name for '" + attrName +
+           "'; use letters, digits and underscores");
+      return ParsedAttrInfo::AttributeNotApplied;
+    }
+    std::string annotation = ("tessera_preserves=" + property + ":").str();
+    for (unsigned i = 1; i < args.size(); ++i) {
+      auto pos = getTesseraArgPosition(FD, args[i]);
+      if (!pos) {
+        warn("'tessera::preserves' names '" + args[i] +
+             "', which is not a parameter of '" + FD->getNameAsString() + "'");
+        return ParsedAttrInfo::AttributeNotApplied;
+      }
+      annotation += (i == 1 ? "" : ",") + std::to_string(*pos);
+    }
+    annotations.push_back(std::move(annotation));
+  }
+
+  // Each argument of a guarantee or assumption is one fact, and stands on its
+  // own, so a malformed one is left out and the rest are kept.
+  for (StringRef text : args) {
+    if (kind == TesseraPropertyKind::Preserves)
+      break;
+    StringRef property, param;
+    if (!parseTesseraFact(text, property, param)) {
+      warn("'" + text + "' is not a fact '" + attrName +
+           "' understands; write a property name and the parameter it applies "
+           "to, such as \"SPD(M)\"" +
+           (isGuarantee ? ", or a bare \"SPD\" for the return value" : ""));
+      continue;
+    }
+
+    if (isGuarantee && param == "return")
+      param = "";
+    if (param.empty()) {
+      if (!isGuarantee) {
+        warn("'tessera::assumes' needs the parameter each fact applies to; "
+             "write \"" +
+             property + "(M)\"");
+        continue;
+      }
+      // The old form gave the parameter as a separate string, which would
+      // now read as a second property of the return value.
+      if (getTesseraArgPosition(FD, property)) {
+        warn("'" + property + "' names a parameter of '" +
+             FD->getNameAsString() +
+             "', not a property; state a property of it as \"SPD(" + property +
+             ")\"");
+        continue;
+      }
+      if (FD->getReturnType()->isVoidType()) {
+        warn("'tessera::guarantees' on a function returning void must name "
+             "the parameter each fact applies to; write \"" +
+             property + "(M)\"");
+        continue;
+      }
+      annotations.push_back(
+          ("tessera_guarantees=" + property + ":return").str());
+      continue;
+    }
+
+    auto pos = getTesseraArgPosition(FD, param);
+    if (!pos) {
+      warn("'" + attrName + "' names '" + param +
+           "', which is not a parameter of '" + FD->getNameAsString() + "'");
+      continue;
+    }
+    if (isGuarantee) {
+      // Only something the function writes through can come out of it with
+      // a property it did not have going in.
+      const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+      unsigned paramIdx = *pos - (MD && MD->isInstance() ? 1 : 0);
+      if (param != "this" && paramIdx < FD->getNumParams()) {
+        QualType type = FD->getParamDecl(paramIdx)->getType();
+        if (!type->isPointerType() && !type->isReferenceType()) {
+          warn("'tessera::guarantees' names '" + param +
+               "', which is passed by value, so the function cannot give it a "
+               "property");
+          continue;
+        }
+      }
+    }
+    annotations.push_back(
+        ((isGuarantee ? "tessera_guarantees=" : "tessera_assumes=") + property +
+         ":arg" + Twine(*pos))
+            .str());
+  }
+  if (annotations.empty())
+    return ParsedAttrInfo::AttributeNotApplied;
+
+  auto &AST = S.getASTContext();
+  for (const std::string &annotation : annotations)
+    D->addAttr(
+        AnnotateAttr::Create(AST, annotation, nullptr, 0, Attr.getRange()));
+  // A property is read off the call that produced a value, or off the
+  // parameters of the function that assumes it, so that call, or that
+  // function's own body, has to survive until tessera-apply-pdl runs; the
+  // pipeline inlines long before then.
+  if (!D->hasAttr<AlwaysInlineAttr>() && !D->hasAttr<NoInlineAttr>())
+    D->addAttr(NoInlineAttr::CreateImplicit(AST));
+  return ParsedAttrInfo::AttributeApplied;
+}
+
+template <TesseraPropertyKind Kind>
+struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
+  TesseraPropertyAttrInfo() {
+    OptArgs = 15;
+    static constexpr Spelling GuaranteesSpellings[] = {
+        {ParsedAttr::AS_GNU, "tessera_guarantees"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "tessera_guarantees"},
+#else
+        {ParsedAttr::AS_C2x, "tessera_guarantees"},
+#endif
+        {ParsedAttr::AS_CXX11, "tessera_guarantees"},
+        {ParsedAttr::AS_CXX11, "tessera::guarantees"}};
+    static constexpr Spelling AssumesSpellings[] = {
+        {ParsedAttr::AS_GNU, "tessera_assumes"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "tessera_assumes"},
+#else
+        {ParsedAttr::AS_C2x, "tessera_assumes"},
+#endif
+        {ParsedAttr::AS_CXX11, "tessera_assumes"},
+        {ParsedAttr::AS_CXX11, "tessera::assumes"}};
+    static constexpr Spelling PreservesSpellings[] = {
+        {ParsedAttr::AS_GNU, "tessera_preserves"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "tessera_preserves"},
+#else
+        {ParsedAttr::AS_C2x, "tessera_preserves"},
+#endif
+        {ParsedAttr::AS_CXX11, "tessera_preserves"},
+        {ParsedAttr::AS_CXX11, "tessera::preserves"}};
+    if constexpr (Kind == TesseraPropertyKind::Guarantees)
+      Spellings = GuaranteesSpellings;
+    else if constexpr (Kind == TesseraPropertyKind::Assumes)
+      Spellings = AssumesSpellings;
+    else
+      Spellings = PreservesSpellings;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    return handleTesseraPropertyAttribute(S, D, Attr, Kind);
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<
+    TesseraPropertyAttrInfo<TesseraPropertyKind::Guarantees>>
+    T3("tessera_guarantees", "");
+static ParsedAttrInfoRegistry::Add<
+    TesseraPropertyAttrInfo<TesseraPropertyKind::Preserves>>
+    T4("tessera_preserves", "");
+static ParsedAttrInfoRegistry::Add<
+    TesseraPropertyAttrInfo<TesseraPropertyKind::Assumes>>
+    T5("tessera_assumes", "");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
@@ -1257,7 +1542,13 @@ public:
                     Token &Tok) override {
     PP.Lex(Tok);
     if (Tok.isNot(tok::string_literal)) {
-      PP.Diag(Tok.getLocation(), diag::err_expected) << tok::string_literal;
+      // Like a malformed tessera attribute, a malformed rule is left out
+      // rather than failing the compile.
+      unsigned ID = PP.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Warning, "'#pragma optimize' expects the rule as "
+                                      "a string literal; it is ignored");
+      PP.Diag(Tok.getLocation(), ID);
+      PP.DiscardUntilEndOfDirective();
       return;
     }
 
