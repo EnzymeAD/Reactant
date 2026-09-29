@@ -1,11 +1,11 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 
-SKYLIB_VERSION = "1.8.2"
+SKYLIB_VERSION = "1.9.0"
 maybe(
     http_archive,
     name = "bazel_skylib",
-    sha256 = "6e78f0e57de26801f6f564fa7c4a48dc8b36873e416257a92bbb0937eeac8446",
+    sha256 = "3b5b49006181f5f8ff626ef8ddceaa95e9bb8ad294f7b5d7b11ea9f7ddaf8c59",
     urls = [
         "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
         "https://github.com/bazelbuild/bazel-skylib/releases/download/{version}/bazel-skylib-{version}.tar.gz".format(version=SKYLIB_VERSION),
@@ -13,6 +13,17 @@ maybe(
 )
 load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
 bazel_skylib_workspace()
+
+# Must match the rules_cc XLA's workspace3.bzl pins (LLVM selects on
+# @rules_cc//cc/libc), and must precede apple_support_dependencies(), which
+# would otherwise pin its own older rules_cc first.
+maybe(
+    http_archive,
+    name = "rules_cc",
+    sha256 = "bd7124a844d0403b4b353bcea34d6c8b2ba88dc26881c26c9ee668da89b71846",
+    strip_prefix = "rules_cc-0.2.25",
+    url = "https://github.com/bazelbuild/rules_cc/releases/download/0.2.25/rules_cc-0.2.25.tar.gz",
+)
 
 maybe(
     http_archive,
@@ -37,13 +48,6 @@ maybe(
         "https://github.com/bazelbuild/platforms/releases/download/1.0.0/platforms-1.0.0.tar.gz",
     ],
     sha256 = "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
-)
-maybe(
-    http_archive,
-    name = "rules_cc",
-    sha256 = "5287821524d1c1d20f1c0ffa90bd2c2d776473dd8c84dafa9eb783150286d825",
-    strip_prefix = "rules_cc-0.2.11",
-    url = "https://github.com/bazelbuild/rules_cc/releases/download/0.2.11/rules_cc-0.2.11.tar.gz",
 )
 load("@rules_cc//cc:extensions.bzl", "compatibility_proxy_repo")
 compatibility_proxy_repo()
