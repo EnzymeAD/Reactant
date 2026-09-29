@@ -29,6 +29,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/MacroBuilder.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -41,6 +42,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 
 #include "Enzyme/Utils.h"
 
@@ -118,10 +120,149 @@ protected:
   }
 };
 
+/// The value of the C name `Name` in the syntax of a rule, if it has one that
+/// a rule can hold: an enumerator becomes its value, and a macro that expands
+/// to a single integer or string becomes that literal. A macro that expands to
+/// another name is followed.
+static std::optional<std::string> resolveRuleName(Sema &S, StringRef Name,
+                                                  unsigned Depth = 0) {
+  if (Depth > 8)
+    return std::nullopt;
+  Preprocessor &PP = S.getPreprocessor();
+  IdentifierInfo *II = PP.getIdentifierInfo(Name);
+
+  if (const MacroInfo *MI = PP.getMacroInfo(II)) {
+    if (!MI->isObjectLike() || MI->getNumTokens() != 1)
+      return std::nullopt;
+    const Token &T = MI->getReplacementToken(0);
+    std::string Spelling = PP.getSpelling(T);
+    switch (T.getKind()) {
+    case tok::string_literal: {
+      // Only a plain "..." with nothing in it a rule string cannot hold.
+      StringRef Text(Spelling);
+      if (!Text.consume_front("\"") || !Text.consume_back("\"") ||
+          Text.find_first_of("\\'") != StringRef::npos)
+        return std::nullopt;
+      return "'" + Text.str() + "'";
+    }
+    case tok::numeric_constant: {
+      int64_t Value;
+      if (StringRef(Spelling).getAsInteger(0, Value))
+        return std::nullopt;
+      return std::to_string(Value);
+    }
+    case tok::identifier:
+      return resolveRuleName(S, Spelling, Depth + 1);
+    default:
+      return std::nullopt;
+    }
+  }
+
+  for (NamedDecl *D :
+       S.getASTContext().getTranslationUnitDecl()->lookup(DeclarationName(II)))
+    if (auto *ECD = dyn_cast<EnumConstantDecl>(D))
+      return toString(ECD->getInitVal(), 10);
+  return std::nullopt;
+}
+
+/// Replace the C names on the right-hand side of `Rule` with their values, so
+/// that a rule written in a library's header can use the library's own names
+/// for its constants, as `MAT_SPD` or `KSPCG`: Tessera sees the rule long after
+/// those names are gone, and only understands numbers and strings.
+///
+/// Only a name the left-hand side does not bind is looked up, which is one the
+/// rule could not otherwise use, so no rule that worked before changes. A name
+/// that is part of a call, as the `petsc` and `ksp_set_type` of
+/// `petsc.ksp_set_type(...)`, is left alone, and so is one with no value: the
+/// rule parser reports it as unbound.
+static std::string resolveRuleNames(Sema &S, StringRef Rule) {
+  size_t Arrow = Rule.find("->");
+  if (Arrow == StringRef::npos)
+    return Rule.str();
+
+  // Numbers are skipped whole, so that the exponent of `1e3` is not taken for
+  // a name.
+  auto skipNumber = [&](size_t I) {
+    size_t J = I;
+    while (J < Rule.size() &&
+           (isAsciiIdentifierContinue(Rule[J]) || Rule[J] == '.' ||
+            ((Rule[J] == '-' || Rule[J] == '+') &&
+             (Rule[J - 1] == 'e' || Rule[J - 1] == 'E'))))
+      ++J;
+    return J;
+  };
+  auto skipName = [&](size_t I) {
+    size_t J = I;
+    while (J < Rule.size() && isAsciiIdentifierContinue(Rule[J]))
+      ++J;
+    return J;
+  };
+
+  // Every name before the arrow. Besides the variables the rule binds, this
+  // takes in op and predicate names, which is harmless: they are never
+  // looked up anyway.
+  llvm::StringSet<> Bound;
+  for (size_t I = 0; I < Arrow;) {
+    if (isDigit(Rule[I]))
+      I = skipNumber(I);
+    else if (isAsciiIdentifierStart(Rule[I])) {
+      size_t J = skipName(I);
+      Bound.insert(Rule.slice(I, J));
+      I = J;
+    } else
+      ++I;
+  }
+
+  std::string Out = Rule.take_front(Arrow + 2).str();
+  for (size_t I = Arrow + 2, N = Rule.size(); I < N;) {
+    char C = Rule[I];
+    if (C == '\'') {
+      size_t J = Rule.find('\'', I + 1);
+      J = J == StringRef::npos ? N : J + 1;
+      Out += Rule.slice(I, J);
+      I = J;
+      continue;
+    }
+    if (isDigit(C)) {
+      size_t J = skipNumber(I);
+      Out += Rule.slice(I, J);
+      I = J;
+      continue;
+    }
+    if (!isAsciiIdentifierStart(C)) {
+      Out += C;
+      ++I;
+      continue;
+    }
+
+    size_t J = skipName(I);
+    StringRef Name = Rule.slice(I, J);
+    size_t Before = I, After = J;
+    while (Before > 0 && isWhitespace(Rule[Before - 1]))
+      --Before;
+    while (After < N && isWhitespace(Rule[After]))
+      ++After;
+    bool PartOfCall = (Before > 0 && Rule[Before - 1] == '.') ||
+                      (After < N && (Rule[After] == '.' || Rule[After] == '('));
+
+    std::optional<std::string> Value;
+    if (!PartOfCall && !Bound.contains(Name))
+      Value = resolveRuleName(S, Name);
+    Out += Value ? *Value : Name.str();
+    I = J;
+  }
+  return Out;
+}
+
 static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
   auto &AST = S.getASTContext();
   SourceLocation loc;
   DeclContext *declCtx = AST.getTranslationUnitDecl();
+
+  // Resolved here rather than when the pragma is read, since a rule may name
+  // constants declared after it.
+  for (std::string &Rule : Rules)
+    Rule = resolveRuleNames(S, Rule);
 
   // create global variable for each optimization string
   for (size_t i = 0, e = Rules.size(); i != e; ++i) {
