@@ -124,6 +124,10 @@ struct MLIRRoundTripOptions {
   bool verifyEach;
   bool parallelCanonicalize;
   int lateSink;
+  bool exportMLIROnly;
+  // Specialize a kernel over the scalars its access indices read (the
+  // strides), not only its loop bounds; the raising pass option of that name.
+  bool specializeIndexStrides;
 };
 #endif
 
@@ -189,6 +193,18 @@ llvm::cl::opt<bool> ParallelCanonicalize(
     cl::desc("Let the raising pipeline's canonicalize-parallel use the "
              "context's thread pool; off by default so every compile job "
              "of a parallel build does not spawn its own pool"));
+
+llvm::cl::opt<bool> SpecializeIndexStrides(
+    "reactant-specialize-index-strides", cl::init(false), cl::Hidden,
+    cl::desc("Specialize a kernel over the scalars its access indices read, "
+             "such as a stride, so the index folds to a constant and a gather "
+             "of it is a slice; off by default, since every such scalar that "
+             "differs from call to call costs an executable per value"));
+
+llvm::cl::opt<bool> ExportMLIROnly(
+    "reactant-export-mlir-only", cl::init(false), cl::Hidden,
+    cl::desc("Stop the round trip after the MLIR pipeline and hand back the "
+             "raised module as MLIR text instead of lowering it to LLVM IR"));
 
 llvm::cl::opt<int> LateSink(
     "reactant-late-sink", cl::init(2), cl::Hidden,
@@ -969,6 +985,10 @@ public:
     if (LateSink.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_LATE_SINK"))
         lateSink = atoi(env);
+    bool specializeIndexStrides = SpecializeIndexStrides.getValue();
+    if (SpecializeIndexStrides.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_SPECIALIZE_INDEX_STRIDES"))
+        specializeIndexStrides = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -981,6 +1001,8 @@ public:
         .verifyEach = verifyEach,
         .parallelCanonicalize = parallelCanonicalize,
         .lateSink = lateSink,
+        .exportMLIROnly = ExportMLIROnly.getValue(),
+        .specializeIndexStrides = specializeIndexStrides,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
