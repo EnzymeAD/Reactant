@@ -16,6 +16,27 @@ bazel_skylib_workspace()
 
 maybe(
     http_archive,
+    name = "bazel_features",
+    sha256 = "094367e732ece23f334eaf84089a720b861d053beeba6a6a68356d3aee1dc32b",
+    strip_prefix = "bazel_features-1.50.0",
+    url = "https://github.com/bazel-contrib/bazel_features/releases/download/v1.50.0/bazel_features-v1.50.0.tar.gz",
+)
+
+load("@bazel_features//:deps.bzl", "bazel_features_deps")
+bazel_features_deps()
+
+maybe(
+    http_archive,
+    name = "rules_cc",
+    sha256 = "bd7124a844d0403b4b353bcea34d6c8b2ba88dc26881c26c9ee668da89b71846",
+    strip_prefix = "rules_cc-0.2.25",
+    url = "https://github.com/bazelbuild/rules_cc/releases/download/0.2.25/rules_cc-0.2.25.tar.gz",
+)
+load("@rules_cc//cc:extensions.bzl", "compatibility_proxy_repo")
+compatibility_proxy_repo()
+
+maybe(
+    http_archive,
     name = "build_bazel_apple_support",
     sha256 = "1ae6fcf983cff3edab717636f91ad0efff2e5ba75607fdddddfd6ad0dbdfaf10",
     url = "https://github.com/bazelbuild/apple_support/releases/download/1.24.5/apple_support.1.24.5.tar.gz",
@@ -26,9 +47,6 @@ load(
 )
 apple_support_dependencies()
 
-load("@bazel_features//:deps.bzl", "bazel_features_deps")
-bazel_features_deps()
-
 maybe(
     http_archive,
     name = "platforms",
@@ -38,15 +56,6 @@ maybe(
     ],
     sha256 = "3384eb1c30762704fbe38e440204e114154086c8fc8a8c2e3e28441028c019a8",
 )
-maybe(
-    http_archive,
-    name = "rules_cc",
-    sha256 = "5287821524d1c1d20f1c0ffa90bd2c2d776473dd8c84dafa9eb783150286d825",
-    strip_prefix = "rules_cc-0.2.11",
-    url = "https://github.com/bazelbuild/rules_cc/releases/download/0.2.11/rules_cc-0.2.11.tar.gz",
-)
-load("@rules_cc//cc:extensions.bzl", "compatibility_proxy_repo")
-compatibility_proxy_repo()
 
 maybe(
     http_archive,
@@ -286,3 +295,6 @@ load("@hedron_compile_commands//:workspace_setup_transitive_transitive.bzl", "he
 hedron_compile_commands_setup_transitive_transitive()
 load("@hedron_compile_commands//:workspace_setup_transitive_transitive_transitive.bzl", "hedron_compile_commands_setup_transitive_transitive_transitive")
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
+load("@enzyme_ad//third_party/z3:workspace.bzl", z3_workspace = "repo")
+z3_workspace()
