@@ -55,6 +55,12 @@ constexpr auto StructKind = clang::TagTypeKind::TTK_Struct;
 
 extern llvm::cl::opt<std::string> ReactantBackend;
 
+static llvm::cl::opt<bool> DisableReactant(
+    "disable-reactant", llvm::cl::init(false), llvm::cl::Hidden,
+    llvm::cl::desc("Act as a plain clang: do not register the Reactant "
+                   "pass pipeline; DISABLE_REACTANT in the environment "
+                   "does the same when the flag is not given"));
+
 // clang renamed CodeGenOptions::CudaGpuBinaryFileName to
 // OffloadBinaryToEmbedFile (llvm/llvm-project#216090) within one major
 // version, so the member's presence rather than LLVM_VERSION_MAJOR decides.
@@ -170,6 +176,14 @@ class EnzymePlugin final : public clang::ASTConsumer {
 
 public:
   EnzymePlugin(clang::CompilerInstance &CI) : CI(CI) {
+    // Allow the wrapper to act as a plain clang: skip registering the
+    // Reactant pass pipeline entirely.
+    bool disable = DisableReactant;
+    if (DisableReactant.getNumOccurrences() == 0)
+      if (const char *env = getenv("DISABLE_REACTANT"))
+        disable = env[0] && env[0] != '0';
+    if (disable)
+      return;
     // FrontendOptions &Opts = CI.getFrontendOpts();
     CodeGenOptions &CGOpts = CI.getCodeGenOpts();
     auto PluginName = "ClangReactant-" + std::to_string(LLVM_VERSION_MAJOR);
