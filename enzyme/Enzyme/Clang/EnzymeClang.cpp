@@ -39,6 +39,7 @@
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
+#include "clang/Sema/Lookup.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/StringExtras.h"
@@ -95,6 +96,17 @@ static std::vector<TesseraArgTypeGlobalInfo> TesseraArgTypeGlobals;
 // Tessera ops whose declaration must be forced into the module; see
 // emitTesseraOpRefGlobals.
 static std::vector<FunctionDecl *> TesseraOpFunctions;
+
+// A fact stated on a statement, waiting for the call to its marker to be
+// spliced in after that statement; see handleTesseraFactStatement.
+struct TesseraFactSite {
+  Stmt *St;
+  Expr *Call;
+  FunctionDecl *Marker;
+  bool Placed = false;
+};
+
+static std::vector<TesseraFactSite> TesseraFactSites;
 
 template <typename ConsumerType>
 class EnzymeAction final : public clang::PluginASTAction {
@@ -365,6 +377,64 @@ static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
   }
 }
 
+// Put each pending fact's marker call right after the statement it was stated
+// on, anywhere below `Parent`: the statement is replaced in its parent by
+// `{ statement; marker(...); }`, so the call runs once the statement has.
+static void spliceTesseraFacts(ASTContext &AST, Stmt *Parent) {
+  for (Stmt *&Child : Parent->children()) {
+    if (!Child)
+      continue;
+    Stmt *Original = Child;
+    spliceTesseraFacts(AST, Original);
+    SmallVector<Stmt *> Stmts;
+    for (TesseraFactSite &Site : TesseraFactSites) {
+      if (Site.Placed || Site.St != Original)
+        continue;
+      if (Stmts.empty())
+        Stmts.push_back(Original);
+      Stmts.push_back(Site.Call);
+      Site.Placed = true;
+    }
+    if (!Stmts.empty())
+      Child =
+          CompoundStmt::Create(AST, Stmts, FPOptionsOverride(),
+                               Original->getBeginLoc(), Original->getEndLoc());
+  }
+}
+
+// Splice in the facts stated in `D`'s body, before codegen sees it: the plugin
+// comes before the main action, so its consumer is handed each declaration
+// first.
+static void spliceTesseraFacts(ASTContext &AST, Decl *D) {
+  if (llvm::all_of(TesseraFactSites,
+                   [](const TesseraFactSite &Site) { return Site.Placed; }))
+    return;
+  if (auto *FD = dyn_cast<FunctionDecl>(D)) {
+    if (Stmt *Body = FD->getBody())
+      spliceTesseraFacts(AST, Body);
+    return;
+  }
+  // A namespace or an extern "C" block reaches the consumer whole.
+  if (auto *DC = dyn_cast<DeclContext>(D))
+    for (Decl *Inner : DC->decls())
+      spliceTesseraFacts(AST, Inner);
+}
+
+// Emit the marker of each fact that was placed, and say which could not be.
+static void emitTesseraFactMarkers(Sema &S) {
+  for (TesseraFactSite &Site : TesseraFactSites) {
+    if (Site.Placed) {
+      S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(Site.Marker));
+      continue;
+    }
+    unsigned ID = S.getDiagnostics().getCustomDiagID(
+        DiagnosticsEngine::Warning,
+        "the fact stated here could not be placed in the function it is "
+        "stated in; it is ignored");
+    S.Diag(Site.St->getBeginLoc(), ID);
+  }
+}
+
 void MakeGlobalOfFn(FunctionDecl *FD, CompilerInstance &CI) {
   // if (FD->isLateTemplateParsed()) return;
   // TODO save any type info into string like attribute
@@ -488,11 +558,22 @@ public:
   }
   ~EnzymePlugin() {}
 
+  bool HandleTopLevelDecl(DeclGroupRef DG) override {
+    for (Decl *D : DG)
+      spliceTesseraFacts(CI.getASTContext(), D);
+    return true;
+  }
+
+  void HandleInlineFunctionDefinition(FunctionDecl *D) override {
+    spliceTesseraFacts(CI.getASTContext(), D);
+  }
+
   void HandleTranslationUnit(ASTContext &Context) override {
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
     emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
     emitTesseraOpRefGlobals(S, TesseraOpFunctions);
+    emitTesseraFactMarkers(S);
   }
 };
 
@@ -1077,7 +1158,12 @@ static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
 //       __attribute__((tessera_readonly("A")));
 //
 // Then a later call given A can rely on it being SPD, as long as every call
-// given A in between is readonly in it.
+// given A in between is readonly in it. A guarantee can also be stated on a
+// statement, of a variable in scope, for a handle built in place rather than
+// by a function (see handleTesseraFactStatement):
+//
+//   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+//   __attribute__((tessera_guarantees("SPD(A)")));
 //
 // A guarantee or assumption may state several facts at once, one per string,
 // and a readonly may name several parameters. Parameters are named as
@@ -1314,6 +1400,151 @@ handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
   return ParsedAttrInfo::AttributeApplied;
 }
 
+// A guarantee on a statement states a fact that holds once the statement has
+// run, about the object a variable in scope points to. It is for a handle
+// built in place, as a PETSc Mat assembled in the body of main is, where
+// there is no function to put the guarantee on:
+//
+//   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+//   __attribute__((tessera_guarantees("SPD(A)")));
+//
+// The fact becomes a call, right after the statement, to a marker generated
+// for it, whose parameter carries the guarantee:
+//
+//   __tessera_fact_0(&A);  // void __tessera_fact_0(Mat *) {}, annotated
+//                          // tessera_guarantees=SPD:arg0 and tessera_fact
+//
+// The passes read it as establishing the fact of whatever handle the variable
+// holds there, and tessera-to-llvm removes the calls and the marker once they
+// are done. The marker is given the variable's address rather than its value
+// because the fact is of the variable at that point: a loaded value is not
+// always recognizably the variable's, as where LLVM merges the handles two
+// branches may have left in it. The marker is a weak definition with an empty
+// body: LLVM cannot see
+// through a weak definition, so it leaves the call alone until then, and a
+// program built without the passes still links, the call doing nothing.
+//
+// The call can only be spliced in once the statement is in its parent, so it
+// is built here, while the variable can still be looked up, and placed when
+// the function reaches the consumer (spliceTesseraFacts).
+static ParsedAttrInfo::AttrHandling
+handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr) {
+  auto warn = [&](const Twine &message) {
+    unsigned ID = S.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Warning,
+                                                     "%0; it is ignored");
+    S.Diag(Attr.getLoc(), ID) << message.str();
+  };
+
+  if (Attr.getNumArgs() < 1) {
+    warn("'tessera::guarantees' on a statement takes one or more facts such as "
+         "\"SPD(A)\"");
+    return ParsedAttrInfo::AttributeNotApplied;
+  }
+  if (S.CurContext->isDependentContext()) {
+    warn("a fact stated on a statement in a template is not supported");
+    return ParsedAttrInfo::AttributeNotApplied;
+  }
+
+  auto &AST = S.getASTContext();
+  SourceLocation loc = Attr.getLoc();
+  // The marker's parameters, one per variable the facts name, in order.
+  SmallVector<VarDecl *> vars;
+  SmallVector<std::string> annotations;
+  for (unsigned i = 0, e = Attr.getNumArgs(); i != e; ++i) {
+    auto *Literal =
+        dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts());
+    if (!Literal) {
+      warn("arguments to 'tessera::guarantees' must be string literals");
+      return ParsedAttrInfo::AttributeNotApplied;
+    }
+    StringRef text = Literal->getString(), property, name;
+    if (!parseTesseraFact(text, property, name)) {
+      warn("'" + text +
+           "' is not a fact 'tessera::guarantees' understands; write a "
+           "property name and the variable it applies to, such as \"SPD(A)\"");
+      continue;
+    }
+    if (name.empty()) {
+      warn("'" + text +
+           "' does not say what it is true of; a fact stated on a statement "
+           "names a variable, as \"SPD(A)\" does");
+      continue;
+    }
+
+    LookupResult R(S, DeclarationName(&AST.Idents.get(name)), loc,
+                   Sema::LookupOrdinaryName);
+    S.LookupName(R, S.getCurScope());
+    auto *VD = R.getAsSingle<VarDecl>();
+    if (!VD) {
+      warn("'" + name + "' is not a variable in scope here");
+      continue;
+    }
+    if (!VD->getType().getNonReferenceType()->isPointerType()) {
+      warn("'" + name +
+           "' is not a pointer; a fact stated on a statement is about the "
+           "object a handle points to");
+      continue;
+    }
+    auto *it = llvm::find(vars, VD);
+    unsigned position = it - vars.begin();
+    if (it == vars.end())
+      vars.push_back(VD);
+    annotations.push_back(
+        ("tessera_guarantees=" + property + ":arg" + Twine(position)).str());
+  }
+  if (annotations.empty())
+    return ParsedAttrInfo::AttributeNotApplied;
+
+  // void __tessera_fact_N(T0 *, T1 *, ...) {}
+  SmallVector<QualType> paramTypes;
+  for (VarDecl *VD : vars)
+    paramTypes.push_back(
+        AST.getPointerType(VD->getType().getNonReferenceType()));
+  QualType fnType = AST.getFunctionType(AST.VoidTy, paramTypes,
+                                        FunctionProtoType::ExtProtoInfo());
+  auto &Id = AST.Idents.get("__tessera_fact_" +
+                            std::to_string(TesseraFactSites.size()));
+  FunctionDecl *Marker = FunctionDecl::Create(
+      AST, AST.getTranslationUnitDecl(), loc, loc, DeclarationName(&Id), fnType,
+      AST.getTrivialTypeSourceInfo(fnType, loc), SC_None);
+  Marker->setImplicit(true);
+  SmallVector<ParmVarDecl *> params;
+  for (QualType type : paramTypes)
+    params.push_back(ParmVarDecl::Create(
+        AST, Marker, loc, loc, nullptr, type,
+        AST.getTrivialTypeSourceInfo(type, loc), SC_None, nullptr));
+  Marker->setParams(params);
+  Marker->setBody(CompoundStmt::Create(AST, {}, FPOptionsOverride(), loc, loc));
+  Marker->addAttr(WeakAttr::CreateImplicit(AST));
+  Marker->addAttr(NoInlineAttr::CreateImplicit(AST));
+  for (const std::string &annotation : annotations)
+    Marker->addAttr(AnnotateAttr::CreateImplicit(AST, annotation, nullptr, 0));
+  Marker->addAttr(
+      AnnotateAttr::CreateImplicit(AST, "tessera_fact", nullptr, 0));
+
+  // __tessera_fact_N(&A, ...);
+  SmallVector<Expr *> args;
+  for (VarDecl *VD : vars) {
+    ExprResult arg = S.CreateBuiltinUnaryOp(
+        loc, UO_AddrOf,
+        S.BuildDeclRefExpr(VD, VD->getType().getNonReferenceType(), VK_LValue,
+                           loc));
+    if (arg.isInvalid())
+      return ParsedAttrInfo::AttributeNotApplied;
+    args.push_back(arg.get());
+  }
+  auto *callee = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, Marker,
+                                     false, loc, fnType, VK_LValue, Marker);
+  Expr *calleePtr = ImplicitCastExpr::Create(
+      AST, AST.getPointerType(fnType), CK_FunctionToPointerDecay, callee,
+      nullptr, VK_PRValue, FPOptionsOverride());
+  Expr *call = CallExpr::Create(AST, calleePtr, args, AST.VoidTy, VK_PRValue,
+                                loc, FPOptionsOverride());
+
+  TesseraFactSites.push_back({St, call, Marker});
+  return ParsedAttrInfo::AttributeApplied;
+}
+
 template <TesseraPropertyKind Kind>
 struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
   TesseraPropertyAttrInfo() {
@@ -1378,6 +1609,15 @@ struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
   AttrHandling handleDeclAttribute(Sema &S, Decl *D,
                                    const ParsedAttr &Attr) const override {
     return handleTesseraPropertyAttribute(S, D, Attr, Kind);
+  }
+
+  // Only a guarantee can be stated on a statement; clang reports the others
+  // as not applying to one.
+  AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
+                                   class Attr *&Result) const override {
+    if constexpr (Kind == TesseraPropertyKind::Guarantees)
+      return handleTesseraFactStatement(S, St, Attr);
+    return NotHandled;
   }
 };
 
