@@ -1,0 +1,269 @@
+name: Reactant Enzyme-GPU-Tests Benchmarks
+
+# Builds LBM, XSBench, RSBench and LULESH from Enzyme-GPU-Tests (mlir branch)
+# with reactant-clang for sm_80, then runs them on an A100 and checks each
+# result with .github/scripts/check_gpu_benchmark.py.
+
+on:
+  schedule:
+    - cron: 0 0 * * *
+  push:
+    branches:
+    - main
+    paths: &paths
+      - '.github/workflows/reactant-gpu-benchmarks.yml'
+      - '.github/scripts/check_gpu_benchmark.py'
+      - 'enzyme/**'
+  pull_request:
+    branches:
+    - main
+    paths: *paths
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build:
+    name: Build Enzyme-GPU-Tests benchmarks - sm_80
+    # Build on a CPU runner and hand the binaries over, so the A100 is held for
+    # the runs (minutes) and not for the LULESH compile (about 25 minutes).
+    runs-on: linux-x86-n2-32
+    timeout-minutes: 500
+
+    container:
+      image: 'ghcr.io/enzymead/reactant-docker-images@sha256:d1ef9dda4ae609152f96ff0bf1e3ddec62c2969a020fed96f72daf1908bc5f34'
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y binutils ninja-build cmake gcc g++ python3 python3-dev gnupg ca-certificates opencl-headers ocl-icd-opencl-dev tmux
+          curl -fsSL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64 /" > /etc/apt/sources.list.d/cuda.list
+          apt-get update
+          apt-get install -y cuda-toolkit-12-9
+          ln -sf /usr/local/cuda-12.9 /usr/local/cuda
+      - name: Check out Reactant
+        uses: actions/checkout@v7
+        with:
+          path: 'Reactant'
+      - name: Check out Enzyme GPU Tests
+        uses: actions/checkout@v7
+        with:
+          repository: 'wsmoses/Enzyme-GPU-Tests'
+          path: 'Enzyme-GPU-Tests'
+          ref: 'mlir'
+      - name: Set environment
+        run: |
+          BASE_DIR=${GITHUB_WORKSPACE}
+          BAZEL_BIN=${BASE_DIR}/Reactant/enzyme/bazel-bin
+          echo "BASE_DIR=${BASE_DIR}" >> ${GITHUB_ENV}
+          # Read by the benchmark Makefiles
+          echo "CLANG_PATH=${BAZEL_BIN}/reactant-clang --driver-mode=g++ -resource-dir=${BAZEL_BIN}/reactant-clang-resource" >> ${GITHUB_ENV}
+          echo "CUDA_PATH=/usr/local/cuda" >> ${GITHUB_ENV}
+          echo "${BAZEL_BIN}/external/llvm-project/clang" >> ${GITHUB_PATH}
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        name: Set up Bazel
+        with:
+          # Avoid downloading Bazel every time.
+          bazelisk-cache: true
+          # Store build cache per workflow.
+          disk-cache: false
+          # Share repository cache between workflows.
+          repository-cache: true
+          bazelisk-version: 1.x
+      - name: Set BAZEL_FLAGS
+        shell: bash
+        run: |
+          BAZEL_FLAGS=(
+              --linkopt=-fuse-ld=lld
+              --test_env=TPU_TOPOLOGY
+              --test_env=TPU_WORKER_ID
+              --test_env=TPU_SKIP_MDS_QUERY=true
+              --test_env=TPU_TOPOLOGY_WRAP
+              --test_env=TPU_CHIPS_PER_HOST_BOUNDS
+              --test_env=TPU_ACCELERATOR_TYPE
+              --test_env=TPU_RUNTIME_METRICS_PORTS
+              --test_env=TPU_TOPOLOGY_ALT
+              --test_env=TPU_HOST_BOUNDS
+              --test_env=TPU_WORKER_HOSTNAMES
+              --test_env=CHIPS_PER_HOST_BOUNDS
+              --test_env=HOST_BOUNDS
+              --test_env=ALT=false
+              --test_env=WRAP
+              --test_env=VBAR_CONTROL_SERVICE_URL
+              --repo_env=CC=$(which clang)
+              --config=public_cache_push
+          )
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS[@]}" >> "${GITHUB_ENV}"
+      - name: Reactant C++ build
+        working-directory: ${{ env.BASE_DIR }}/Reactant/enzyme
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes -c opt @llvm-project//clang:clang-linker-wrapper //:reactant-clang //:reactant-clang-resource
+      # The Makefiles default to sm_120; the A100 is sm_80.
+      - name: LBM build
+        timeout-minutes: 10
+        working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests/LBM
+        run: make EMBEDDED_CLANG=yes SM_VERSION=80 -j
+      - name: XSBench build
+        timeout-minutes: 30
+        working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests/XSBench
+        run: make EMBEDDED_CLANG=yes SM_VERSION=80 -j
+      - name: RSBench build
+        timeout-minutes: 30
+        working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests/RSBench
+        run: make EMBEDDED_CLANG=yes SM_VERSION=80 -j
+      - name: LULESH build
+        timeout-minutes: 60
+        working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests/LULESH
+        run: make EMBEDDED_CLANG=yes SM_VERSION=80 -j
+      - name: Package benchmarks
+        working-directory: ${{ env.BASE_DIR }}/Enzyme-GPU-Tests
+        run: |
+          # Reactant emits one cubin per launch site, a plain clang build one
+          # per translation unit, so a count near the number of .cu files
+          # means the kernels did not come from Reactant.
+          for bin in LBM/lbm XSBench/XSBench RSBench/rsbench LULESH/lulesh; do
+            echo "$bin: $(/usr/local/cuda/bin/cuobjdump -lelf $bin | wc -l) cubins"
+          done
+          # tar keeps the executable bits, which artifacts drop.
+          tar -czf ${{ env.BASE_DIR }}/gpu-benchmarks-sm80.tar.gz LBM/lbm LBM/datasets/lbm/short XSBench/XSBench RSBench/rsbench LULESH/lulesh
+      - name: Upload benchmarks
+        uses: actions/upload-artifact@v7
+        timeout-minutes: 10
+        with:
+          name: gpu-benchmarks-sm80
+          path: gpu-benchmarks-sm80.tar.gz
+          if-no-files-found: error
+          retention-days: 90
+
+  test:
+    name: 'Run GPU benchmarks - ${{ matrix.os }}'
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    container:
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:d1ef9dda4ae609152f96ff0bf1e3ddec62c2969a020fed96f72daf1908bc5f34' ) || '' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - linux-x86-a2-48-a100-4gpu
+
+    env:
+      # Load every kernel when the CUDA context is created, so the timings the
+      # benchmarks report leave out module loading (with the default lazy
+      # loading it added a third to LBM's time and two thirds to LULESH's).
+      CUDA_MODULE_LOADING: EAGER
+
+    steps:
+      - name: Check GPUs
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          nvidia-smi
+      - name: Check out Reactant
+        uses: actions/checkout@v7
+        with:
+          path: 'Reactant'
+          sparse-checkout: .github/scripts
+      - name: Download benchmarks
+        uses: actions/download-artifact@v8
+        timeout-minutes: 10
+        with:
+          name: gpu-benchmarks-sm80
+      - name: Unpack benchmarks
+        id: unpack
+        run: |
+          mkdir benchmarks
+          tar -xzf gpu-benchmarks-sm80.tar.gz -C benchmarks
+      # Each check runs even if an earlier one failed, so one run reports all four.
+      - name: Run LBM
+        timeout-minutes: 15
+        run: python3 Reactant/.github/scripts/check_gpu_benchmark.py lbm benchmarks --device ${{ matrix.os }} --results results
+      - name: Run XSBench
+        if: ${{ !cancelled() && steps.unpack.outcome == 'success' }}
+        timeout-minutes: 15
+        run: python3 Reactant/.github/scripts/check_gpu_benchmark.py xsbench benchmarks --device ${{ matrix.os }} --results results
+      - name: Run RSBench
+        if: ${{ !cancelled() && steps.unpack.outcome == 'success' }}
+        timeout-minutes: 15
+        run: python3 Reactant/.github/scripts/check_gpu_benchmark.py rsbench benchmarks --device ${{ matrix.os }} --results results
+      - name: Run LULESH
+        if: ${{ !cancelled() && steps.unpack.outcome == 'success' }}
+        timeout-minutes: 15
+        run: python3 Reactant/.github/scripts/check_gpu_benchmark.py lulesh benchmarks --device ${{ matrix.os }} --results results
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        timeout-minutes: 10
+        if: ${{ !cancelled() }}
+        with:
+          name: gpu-benchmark-results-${{ matrix.os }}
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 90
+
+  benchmark-summary:
+    name: Benchmark Summary
+    runs-on: ubuntu-latest
+    needs: test
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: write # contents permission to update benchmark contents in gh-pages branch
+      deployments: write # deployments permission to deploy GitHub pages website
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check for gh-pages branch
+        id: gh-pages
+        run: |
+          # github-action-benchmark keeps its data on this branch and fails
+          # when it does not exist, which would turn every run red until
+          # someone creates it.
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice title=Benchmark Summary::No gh-pages branch yet, so these results were not recorded."
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Download all benchmark results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: gpu-benchmark-results-*
+          path: benchmark-results
+      - name: Combine benchmark results
+        id: combine
+        shell: python
+        run: |
+          import glob, json, os
+
+          records = []
+          for path in sorted(glob.glob('benchmark-results/**/*.json', recursive=True)):
+              with open(path) as f:
+                  records += json.load(f)
+          with open('combined_results.json', 'w') as f:
+              json.dump(records, f, indent=2)
+          print(json.dumps(records, indent=2))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"count={len(records)}\n")
+      - name: Cache and upload benchmark results
+        if: ${{ steps.gh-pages.outputs.exists == 'true' && steps.combine.outputs.count != '0' }}
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Reactant GPU Benchmarks
+          tool: "customSmallerIsBetter"
+          output-file-path: combined_results.json
+          benchmark-data-dir-path: "benchmarks"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          comment-always: false
+          summary-always: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          alert-threshold: "150%"
+          fail-on-alert: false
+          # Record only main: workflow_dispatch can run on any branch.
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+          max-items-in-chart: 50
