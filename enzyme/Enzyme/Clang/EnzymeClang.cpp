@@ -1291,9 +1291,9 @@ static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
 //       __attribute__((tessera_readonly("A")));
 //
 // Then a later call given A can rely on it being SPD, as long as every call
-// given A in between is readonly in it. A guarantee can also be stated on a
-// statement, of a variable in scope, for a handle built in place rather than
-// by a function (see handleTesseraFactStatement):
+// given A in between is readonly in it. A guarantee or assumption can also be
+// stated on a statement, of a variable in scope, for a handle built in place 
+// rather than by a function (see handleTesseraFactStatement):
 //
 //   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
 //   __attribute__((tessera_guarantees("SPD(A)")));
@@ -1561,7 +1561,8 @@ handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
 // is built here, while the variable can still be looked up, and placed when
 // the function reaches the consumer (spliceTesseraFacts).
 static ParsedAttrInfo::AttrHandling
-handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr) {
+handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr, 
+                                    TesseraPropertyKind kind) {
   auto warn = [&](const Twine &message) {
     unsigned ID = S.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Warning,
                                                      "%0; it is ignored");
@@ -1569,8 +1570,8 @@ handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr) {
   };
 
   if (Attr.getNumArgs() < 1) {
-    warn("'tessera::guarantees' on a statement takes one or more facts such as "
-         "\"SPD(A)\"");
+    warn("'tessera::guarantees' or 'tessera::assumes' on a statement takes one or more "
+         "facts such as \"SPD(A)\"");
     return ParsedAttrInfo::AttributeNotApplied;
   }
   if (S.CurContext->isDependentContext()) {
@@ -1587,13 +1588,13 @@ handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr) {
     auto *Literal =
         dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts());
     if (!Literal) {
-      warn("arguments to 'tessera::guarantees' must be string literals");
+      warn("arguments to 'tessera::guarantees' or 'tessera::assumes' must be string literals");
       return ParsedAttrInfo::AttributeNotApplied;
     }
     StringRef text = Literal->getString(), property, name;
     if (!parseTesseraFact(text, property, name)) {
       warn("'" + text +
-           "' is not a fact 'tessera::guarantees' understands; write a "
+           "' is not a fact 'tessera::guarantees' or 'tessera::assumes' understands; write a "
            "property name and the variable it applies to, such as \"SPD(A)\"");
       continue;
     }
@@ -1622,8 +1623,13 @@ handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr) {
     unsigned position = it - vars.begin();
     if (it == vars.end())
       vars.push_back(VD);
-    annotations.push_back(
+    if (kind == TesseraPropertyKind::Guarantees) {
+      annotations.push_back(
         ("tessera_guarantees=" + property + ":arg" + Twine(position)).str());
+    } else if (kind == TesseraPropertyKind::Assumes) {
+      annotations.push_back(
+        ("tessera_assumes=" + property + ":arg" + Twine(position)).str());
+    }
   }
   if (annotations.empty())
     return ParsedAttrInfo::AttributeNotApplied;
@@ -1748,8 +1754,8 @@ struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
   // as not applying to one.
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
                                    class Attr *&Result) const override {
-    if constexpr (Kind == TesseraPropertyKind::Guarantees)
-      return handleTesseraFactStatement(S, St, Attr);
+    if constexpr ((Kind == TesseraPropertyKind::Guarantees) || (Kind == TesseraPropertyKind::Assumes))
+      return handleTesseraFactStatement(S, St, Attr, Kind);
     return NotHandled;
   }
 };
