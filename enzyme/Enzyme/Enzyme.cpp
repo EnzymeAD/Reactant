@@ -128,6 +128,9 @@ struct MLIRRoundTripOptions {
   // Specialize a kernel over the scalars its access indices read (the
   // strides), not only its loop bounds; the raising pass option of that name.
   bool specializeIndexStrides;
+  // Specialize a kernel over every scalar integer argument it only reads
+  // (lengths, flags); the raising pass option of that name.
+  bool specializeIntScalars;
 };
 #endif
 
@@ -200,6 +203,13 @@ llvm::cl::opt<bool> SpecializeIndexStrides(
              "such as a stride, so the index folds to a constant and a gather "
              "of it is a slice; off by default, since every such scalar that "
              "differs from call to call costs an executable per value"));
+
+llvm::cl::opt<bool> SpecializeIntScalars(
+    "reactant-specialize-int-scalars", cl::init(false), cl::Hidden,
+    cl::desc("Specialize a kernel over every scalar integer argument it only "
+             "reads, such as a length or a flag, so none reaches the device as "
+             "a buffer of its own; off by default, since every such scalar "
+             "that differs from call to call costs an executable per value"));
 
 llvm::cl::opt<bool> ExportMLIROnly(
     "reactant-export-mlir-only", cl::init(false), cl::Hidden,
@@ -989,6 +999,10 @@ public:
     if (SpecializeIndexStrides.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_SPECIALIZE_INDEX_STRIDES"))
         specializeIndexStrides = env[0] && env[0] != '0';
+    bool specializeIntScalars = SpecializeIntScalars.getValue();
+    if (SpecializeIntScalars.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_SPECIALIZE_INT_SCALARS"))
+        specializeIntScalars = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -1003,6 +1017,7 @@ public:
         .lateSink = lateSink,
         .exportMLIROnly = ExportMLIROnly.getValue(),
         .specializeIndexStrides = specializeIndexStrides,
+        .specializeIntScalars = specializeIntScalars,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
