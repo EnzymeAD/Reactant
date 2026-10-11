@@ -128,6 +128,15 @@ struct MLIRRoundTripOptions {
   // Specialize a kernel over the scalars its access indices read (the
   // strides), not only its loop bounds; the raising pass option of that name.
   bool specializeIndexStrides;
+  // Fully unroll every loop whose trip count is a compile time constant of
+  // at most this many iterations, before the first affine-cfg; below 2 none.
+  int unrollMaxTripCount;
+  // ... while the iterations times the operations nested in the loop's body
+  // (inner loops already unrolled) are at most this many; negative: no limit.
+  int unrollMaxNestedOps;
+  // Specialize a kernel over every scalar integer argument it only reads
+  // (lengths, flags); the raising pass option of that name.
+  bool specializeIntScalars;
 };
 #endif
 
@@ -201,6 +210,13 @@ llvm::cl::opt<bool> SpecializeIndexStrides(
              "of it is a slice; off by default, since every such scalar that "
              "differs from call to call costs an executable per value"));
 
+llvm::cl::opt<bool> SpecializeIntScalars(
+    "reactant-specialize-int-scalars", cl::init(false), cl::Hidden,
+    cl::desc("Specialize a kernel over every scalar integer argument it only "
+             "reads, such as a length or a flag, so none reaches the device as "
+             "a buffer of its own; off by default, since every such scalar "
+             "that differs from call to call costs an executable per value"));
+
 llvm::cl::opt<bool> ExportMLIROnly(
     "reactant-export-mlir-only", cl::init(false), cl::Hidden,
     cl::desc("Stop the round trip after the MLIR pipeline and hand back the "
@@ -211,6 +227,18 @@ llvm::cl::opt<int> LateSink(
     cl::desc("Mode for the GPU serializer's late sink of cheap address "
              "computations: 0 disables it, 1 sinks only within the "
              "defining loop, 2 also rematerializes into deeper loops"));
+
+llvm::cl::opt<int> UnrollMaxTripCount(
+    "reactant-unroll-max-trip-count", cl::init(0), cl::Hidden,
+    cl::desc("Fully unroll every loop whose trip count is a compile time "
+             "constant of at most this many iterations, before the raising's "
+             "first affine-cfg; below 2 unrolls none"));
+
+llvm::cl::opt<int> UnrollMaxNestedOps(
+    "reactant-unroll-max-nested-ops", cl::init(4096), cl::Hidden,
+    cl::desc("Unroll a loop of two or more iterations only while its "
+             "iterations times the operations nested in its body, inner "
+             "loops already unrolled, is at most this; negative: no limit"));
 
 namespace {
 
@@ -989,6 +1017,18 @@ public:
     if (SpecializeIndexStrides.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_SPECIALIZE_INDEX_STRIDES"))
         specializeIndexStrides = env[0] && env[0] != '0';
+    int unrollMaxTripCount = UnrollMaxTripCount.getValue();
+    if (UnrollMaxTripCount.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_UNROLL_MAX_TRIP_COUNT"))
+        unrollMaxTripCount = atoi(env);
+    int unrollMaxNestedOps = UnrollMaxNestedOps.getValue();
+    if (UnrollMaxNestedOps.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_UNROLL_MAX_NESTED_OPS"))
+        unrollMaxNestedOps = atoi(env);
+    bool specializeIntScalars = SpecializeIntScalars.getValue();
+    if (SpecializeIntScalars.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_SPECIALIZE_INT_SCALARS"))
+        specializeIntScalars = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -1003,6 +1043,9 @@ public:
         .lateSink = lateSink,
         .exportMLIROnly = ExportMLIROnly.getValue(),
         .specializeIndexStrides = specializeIndexStrides,
+        .unrollMaxTripCount = unrollMaxTripCount,
+        .unrollMaxNestedOps = unrollMaxNestedOps,
+        .specializeIntScalars = specializeIntScalars,
     };
 
 #if REACTANT_USE_LINKED_RAISE 

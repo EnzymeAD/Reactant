@@ -61,7 +61,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         repository: 'llvm/llvm-project'
-        ref: '0220c07a94012b9dce9250addac6a8ee1f674b21'
+        ref: 'b08e005995ed29a2f89aa9a3f599a9d45db65523'
         path: 'llvm-project'
 
     # Build the Enzyme-JAX this checkout pins (enzyme/workspace.bzl), not
