@@ -648,6 +648,28 @@ void fixup(Module &M) {
   }
 }
 
+// The module flags a device module shares with the host module it is linked
+// into describe one compile on each side, and some differ by target with a
+// behavior that makes the link fail: long-double-type is double on NVPTX and
+// x86_fp80 on x86-64. The host's stand, and the device module's copies go.
+static void dropSharedModuleFlags(Module &device, const Module &host) {
+  NamedMDNode *flags = device.getModuleFlagsMetadata();
+  if (!flags)
+    return;
+  SmallVector<MDNode *> kept;
+  for (MDNode *flag : flags->operands()) {
+    auto *key = flag->getNumOperands() == 3
+                    ? dyn_cast<MDString>(flag->getOperand(1))
+                    : nullptr;
+    if (key && host.getModuleFlag(key->getString()))
+      continue;
+    kept.push_back(flag);
+  }
+  flags->clearOperands();
+  for (MDNode *flag : kept)
+    flags->addOperand(flag);
+}
+
 static std::string reExportPath(llvm::StringRef src, bool besideSource) {
   if (besideSource)
     return (src + ".re_export").str();
@@ -831,9 +853,13 @@ public:
         }
       }
 
+      dropSharedModuleFlags(*mod2, M);
       auto handler = M.getContext().getDiagnosticHandler();
       Linker L(M);
-      L.linkInModule(std::move(mod2));
+      if (L.linkInModule(std::move(mod2))) {
+        llvm::errs() << "LLVMToMLIR: could not link the device module\n";
+        exit(1);
+      }
       M.getContext().setDiagnosticHandler(std::move(handler));
       for (auto name : toInternalize)
         if (auto F = M.getFunction(name)) {
