@@ -28,6 +28,7 @@
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/FileManager.h"
@@ -42,6 +43,7 @@
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -132,18 +134,51 @@ protected:
   }
 };
 
+/// The declaration a C++ name in a rule refers to, `KSPCG` or, qualified,
+/// `mfem::IntRules` and `mfem::Geometry::CUBE`, looked up from file scope as a
+/// name written there is: each qualifier is a namespace, a class or an enum.
+/// Only the variable or enumerator a rule can use is returned.
+static NamedDecl *lookupRuleDecl(Sema &S, StringRef Name) {
+  Name.consume_front("::");
+  SmallVector<StringRef, 4> Parts;
+  Name.split(Parts, "::");
+  DeclContext *DC = S.getASTContext().getTranslationUnitDecl();
+  for (size_t I = 0, E = Parts.size(); I != E; ++I) {
+    bool Last = I + 1 == E;
+    DeclarationName DN(&S.getASTContext().Idents.get(Parts[I]));
+    DeclContext *Next = nullptr;
+    for (NamedDecl *D : DC->lookup(DN)) {
+      if (Last && (isa<EnumConstantDecl>(D) || isa<VarDecl>(D)))
+        return D;
+      if (!Last && (isa<NamespaceDecl>(D) || isa<CXXRecordDecl>(D) ||
+                    isa<EnumDecl>(D))) {
+        Next = cast<DeclContext>(D);
+        break;
+      }
+    }
+    if (!Next)
+      return nullptr;
+    DC = Next;
+  }
+  return nullptr;
+}
+
 /// The value of the C name `Name` in the syntax of a rule, if it has one that
-/// a rule can hold: an enumerator becomes its value, and a macro that expands
-/// to a single integer or string becomes that literal. A macro that expands to
-/// another name is followed.
-static std::optional<std::string> resolveRuleName(Sema &S, StringRef Name,
-                                                  unsigned Depth = 0) {
+/// a rule can hold: an enumerator becomes its value, a macro that expands to a
+/// single integer or string becomes that literal, and a global variable
+/// becomes its symbol, `@name`, which the rule passes the address of. A macro
+/// that expands to another name is followed. A global is added to `Globals`,
+/// for the caller to keep in the module.
+static std::optional<std::string>
+resolveRuleName(Sema &S, StringRef Name, SmallVectorImpl<VarDecl *> &Globals,
+                unsigned Depth = 0) {
   if (Depth > 8)
     return std::nullopt;
   Preprocessor &PP = S.getPreprocessor();
-  IdentifierInfo *II = PP.getIdentifierInfo(Name);
+  IdentifierInfo *II =
+      Name.contains(':') ? nullptr : PP.getIdentifierInfo(Name);
 
-  if (const MacroInfo *MI = PP.getMacroInfo(II)) {
+  if (const MacroInfo *MI = II ? PP.getMacroInfo(II) : nullptr) {
     if (!MI->isObjectLike() || MI->getNumTokens() != 1)
       return std::nullopt;
     const Token &T = MI->getReplacementToken(0);
@@ -164,30 +199,42 @@ static std::optional<std::string> resolveRuleName(Sema &S, StringRef Name,
       return std::to_string(Value);
     }
     case tok::identifier:
-      return resolveRuleName(S, Spelling, Depth + 1);
+      return resolveRuleName(S, Spelling, Globals, Depth + 1);
     default:
       return std::nullopt;
     }
   }
 
-  for (NamedDecl *D :
-       S.getASTContext().getTranslationUnitDecl()->lookup(DeclarationName(II)))
-    if (auto *ECD = dyn_cast<EnumConstantDecl>(D))
-      return toString(ECD->getInitVal(), 10);
+  NamedDecl *D = lookupRuleDecl(S, Name);
+  if (auto *ECD = dyn_cast_or_null<EnumConstantDecl>(D))
+    return toString(ECD->getInitVal(), 10);
+  // A global object, whose address the rule passes. A reference has no object
+  // of its own to point to, and a thread-local one has no single address.
+  if (auto *VD = dyn_cast_or_null<VarDecl>(D)) {
+    if (!VD->hasGlobalStorage() || VD->isStaticLocal() ||
+        VD->getType()->isReferenceType() ||
+        VD->getTLSKind() != VarDecl::TLS_None)
+      return std::nullopt;
+    Globals.push_back(VD);
+    return "@" + ASTNameGenerator(S.getASTContext()).getName(VD);
+  }
   return std::nullopt;
 }
 
-/// Replace the C names on the right-hand side of `Rule` with their values, so
-/// that a rule written in a library's header can use the library's own names
-/// for its constants, as `MAT_SPD` or `KSPCG`: Tessera sees the rule long after
-/// those names are gone, and only understands numbers and strings.
+/// Replace the C names in the condition and on the right-hand side of `Rule`
+/// with their values, so that a rule written in a library's header can use
+/// the library's own names for its constants and globals, as `MAT_SPD`,
+/// `mfem::Geometry::CUBE` or `mfem::IntRules`: Tessera sees the rule long
+/// after those names are gone, and only understands numbers, strings and
+/// symbols.
 ///
 /// Only a name the left-hand side does not bind is looked up, which is one the
 /// rule could not otherwise use, so no rule that worked before changes. A name
 /// that is part of a call, as the `petsc` and `ksp_set_type` of
 /// `petsc.ksp_set_type(...)`, is left alone, and so is one with no value: the
 /// rule parser reports it as unbound.
-static std::string resolveRuleNames(Sema &S, StringRef Rule) {
+static std::string resolveRuleNames(Sema &S, StringRef Rule,
+                                    SmallVectorImpl<VarDecl *> &Globals) {
   size_t Arrow = Rule.find("->");
   if (Arrow == StringRef::npos)
     return Rule.str();
@@ -203,18 +250,53 @@ static std::string resolveRuleNames(Sema &S, StringRef Rule) {
       ++J;
     return J;
   };
+  // A qualified C++ name, `mfem::Geometry::CUBE`, is one name.
+  auto qualifies = [&](size_t J) {
+    return J + 2 < Rule.size() && Rule[J] == ':' && Rule[J + 1] == ':' &&
+           isAsciiIdentifierStart(Rule[J + 2]);
+  };
   auto skipName = [&](size_t I) {
     size_t J = I;
-    while (J < Rule.size() && isAsciiIdentifierContinue(Rule[J]))
-      ++J;
-    return J;
+    while (true) {
+      while (J < Rule.size() && isAsciiIdentifierContinue(Rule[J]))
+        ++J;
+      if (!qualifies(J))
+        return J;
+      J += 2;
+    }
   };
 
-  // Every name before the arrow. Besides the variables the rule binds, this
-  // takes in op and predicate names, which is harmless: they are never
-  // looked up anyway.
+  // A condition, `if cond, lhs -> rhs`, ends at the first ',' outside
+  // parentheses and quotes; what follows it, up to the arrow, is what the
+  // rule matches.
+  size_t CondBegin = 0, LhsBegin = 0;
+  size_t First = Rule.find_first_not_of(" \t\n");
+  if (First != StringRef::npos && Rule.substr(First).starts_with("if") &&
+      First + 2 < Arrow && !isAsciiIdentifierContinue(Rule[First + 2])) {
+    CondBegin = First + 2;
+    int Depth = 0;
+    for (size_t I = CondBegin; I < Arrow; ++I) {
+      if (Rule[I] == '\'') {
+        size_t J = Rule.find('\'', I + 1);
+        I = J == StringRef::npos ? Arrow : J;
+      } else if (Rule[I] == '(')
+        ++Depth;
+      else if (Rule[I] == ')')
+        --Depth;
+      else if (Rule[I] == ',' && Depth == 0) {
+        LhsBegin = I + 1;
+        break;
+      }
+    }
+    // No ',': not a rule the parser accepts, so it is left as written.
+    if (LhsBegin == 0)
+      CondBegin = 0;
+  }
+
+  // Every name in what the rule matches. Besides the variables it binds, this
+  // takes in op names, which is harmless: they are never looked up anyway.
   llvm::StringSet<> Bound;
-  for (size_t I = 0; I < Arrow;) {
+  for (size_t I = LhsBegin; I < Arrow;) {
     if (isDigit(Rule[I]))
       I = skipNumber(I);
     else if (isAsciiIdentifierStart(Rule[I])) {
@@ -225,44 +307,54 @@ static std::string resolveRuleNames(Sema &S, StringRef Rule) {
       ++I;
   }
 
-  std::string Out = Rule.take_front(Arrow + 2).str();
-  for (size_t I = Arrow + 2, N = Rule.size(); I < N;) {
-    char C = Rule[I];
-    if (C == '\'') {
-      size_t J = Rule.find('\'', I + 1);
-      J = J == StringRef::npos ? N : J + 1;
-      Out += Rule.slice(I, J);
-      I = J;
-      continue;
-    }
-    if (isDigit(C)) {
-      size_t J = skipNumber(I);
-      Out += Rule.slice(I, J);
-      I = J;
-      continue;
-    }
-    if (!isAsciiIdentifierStart(C)) {
-      Out += C;
-      ++I;
-      continue;
-    }
+  std::string Out;
+  size_t N = Rule.size();
+  auto resolve = [&](size_t Begin, size_t End) {
+    for (size_t I = Begin; I < End;) {
+      char C = Rule[I];
+      if (C == '\'') {
+        size_t J = Rule.find('\'', I + 1);
+        J = J == StringRef::npos ? N : J + 1;
+        Out += Rule.slice(I, J);
+        I = J;
+        continue;
+      }
+      if (isDigit(C)) {
+        size_t J = skipNumber(I);
+        Out += Rule.slice(I, J);
+        I = J;
+        continue;
+      }
+      // `::mfem::IntRules`, from the global namespace.
+      if (!isAsciiIdentifierStart(C) && !qualifies(I)) {
+        Out += C;
+        ++I;
+        continue;
+      }
 
-    size_t J = skipName(I);
-    StringRef Name = Rule.slice(I, J);
-    size_t Before = I, After = J;
-    while (Before > 0 && isWhitespace(Rule[Before - 1]))
-      --Before;
-    while (After < N && isWhitespace(Rule[After]))
-      ++After;
-    bool PartOfCall = (Before > 0 && Rule[Before - 1] == '.') ||
-                      (After < N && (Rule[After] == '.' || Rule[After] == '('));
+      size_t J = skipName(I);
+      StringRef Name = Rule.slice(I, J);
+      size_t Before = I, After = J;
+      while (Before > 0 && isWhitespace(Rule[Before - 1]))
+        --Before;
+      while (After < N && isWhitespace(Rule[After]))
+        ++After;
+      bool PartOfCall =
+          (Before > 0 && Rule[Before - 1] == '.') ||
+          (After < N && (Rule[After] == '.' || Rule[After] == '('));
 
-    std::optional<std::string> Value;
-    if (!PartOfCall && !Bound.contains(Name))
-      Value = resolveRuleName(S, Name);
-    Out += Value ? *Value : Name.str();
-    I = J;
-  }
+      std::optional<std::string> Value;
+      if (!PartOfCall && !Bound.contains(Name))
+        Value = resolveRuleName(S, Name, Globals);
+      Out += Value ? *Value : Name.str();
+      I = J;
+    }
+  };
+  // With no condition, CondBegin and LhsBegin are both 0.
+  Out += Rule.take_front(CondBegin);
+  resolve(CondBegin, LhsBegin);
+  Out += Rule.slice(LhsBegin, Arrow + 2);
+  resolve(Arrow + 2, N);
   return Out;
 }
 
@@ -273,8 +365,36 @@ static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
 
   // Resolved here rather than when the pragma is read, since a rule may name
   // constants declared after it.
+  SmallVector<VarDecl *> Globals;
   for (std::string &Rule : Rules)
-    Rule = resolveRuleNames(S, Rule);
+    Rule = resolveRuleNames(S, Rule, Globals);
+
+  // A global a rule names is only in the module if something uses it, which
+  // may be nothing but the rule:
+  //   static <type> *__tessera_global_ref_N __attribute__((used)) = &global;
+  llvm::SmallPtrSet<VarDecl *, 4> Pinned;
+  for (VarDecl *Global : Globals) {
+    if (!Pinned.insert(Global).second)
+      continue;
+    QualType RefTy = AST.getPointerType(Global->getType());
+    auto *DR = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, Global,
+                                   false, loc, Global->getType(),
+                                   ExprValueKind::VK_LValue, Global, nullptr);
+    auto *Ref = UnaryOperator::Create(
+        AST, DR, UnaryOperatorKind::UO_AddrOf, RefTy, ExprValueKind::VK_PRValue,
+        ExprObjectKind::OK_Ordinary, loc, /*CanOverflow=*/false,
+        FPOptionsOverride());
+    auto &Id = AST.Idents.get("__tessera_global_ref_" +
+                              std::to_string(Pinned.size() - 1));
+    auto *VD =
+        VarDecl::Create(AST, declCtx, loc, loc, &Id, RefTy, nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(Ref);
+    VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+    S.MarkVariableReferenced(loc, Global);
+    declCtx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
 
   // create global variable for each optimization string
   for (size_t i = 0, e = Rules.size(); i != e; ++i) {
