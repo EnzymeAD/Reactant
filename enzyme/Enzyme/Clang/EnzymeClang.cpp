@@ -1600,10 +1600,11 @@ handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr,
       warn("'" + name + "' is not a variable in scope here");
       continue;
     }
-    if (!VD->getType().getNonReferenceType()->isPointerType()) {
+    QualType varType = VD->getType().getNonReferenceType();
+    if (!varType->isPointerType() && !varType->isRecordType()) {
       warn("'" + name +
-           "' is not a pointer; a fact stated on a statement is about the "
-           "object a handle points to");
+           "' is neither a pointer nor an object; a fact stated on a "
+           "statement is about an object, or the object a handle points to");
       continue;
     }
     auto *it = llvm::find(vars, VD);
