@@ -128,6 +128,15 @@ struct MLIRRoundTripOptions {
   // Specialize a kernel over the scalars its access indices read (the
   // strides), not only its loop bounds; the raising pass option of that name.
   bool specializeIndexStrides;
+  // Fully unroll every loop whose trip count is a compile time constant of
+  // at most this many iterations, before the first affine-cfg; below 2 none.
+  int unrollMaxTripCount;
+  // ... while the iterations times the operations nested in the loop's body
+  // (inner loops already unrolled) are at most this many; negative: no limit.
+  int unrollMaxNestedOps;
+  // Specialize a kernel over every scalar integer argument it only reads
+  // (lengths, flags); the raising pass option of that name.
+  bool specializeIntScalars;
 };
 #endif
 
@@ -201,6 +210,13 @@ llvm::cl::opt<bool> SpecializeIndexStrides(
              "of it is a slice; off by default, since every such scalar that "
              "differs from call to call costs an executable per value"));
 
+llvm::cl::opt<bool> SpecializeIntScalars(
+    "reactant-specialize-int-scalars", cl::init(false), cl::Hidden,
+    cl::desc("Specialize a kernel over every scalar integer argument it only "
+             "reads, such as a length or a flag, so none reaches the device as "
+             "a buffer of its own; off by default, since every such scalar "
+             "that differs from call to call costs an executable per value"));
+
 llvm::cl::opt<bool> ExportMLIROnly(
     "reactant-export-mlir-only", cl::init(false), cl::Hidden,
     cl::desc("Stop the round trip after the MLIR pipeline and hand back the "
@@ -211,6 +227,18 @@ llvm::cl::opt<int> LateSink(
     cl::desc("Mode for the GPU serializer's late sink of cheap address "
              "computations: 0 disables it, 1 sinks only within the "
              "defining loop, 2 also rematerializes into deeper loops"));
+
+llvm::cl::opt<int> UnrollMaxTripCount(
+    "reactant-unroll-max-trip-count", cl::init(0), cl::Hidden,
+    cl::desc("Fully unroll every loop whose trip count is a compile time "
+             "constant of at most this many iterations, before the raising's "
+             "first affine-cfg; below 2 unrolls none"));
+
+llvm::cl::opt<int> UnrollMaxNestedOps(
+    "reactant-unroll-max-nested-ops", cl::init(4096), cl::Hidden,
+    cl::desc("Unroll a loop of two or more iterations only while its "
+             "iterations times the operations nested in its body, inner "
+             "loops already unrolled, is at most this; negative: no limit"));
 
 namespace {
 
@@ -620,6 +648,28 @@ void fixup(Module &M) {
   }
 }
 
+// The module flags a device module shares with the host module it is linked
+// into describe one compile on each side, and some differ by target with a
+// behavior that makes the link fail: long-double-type is double on NVPTX and
+// x86_fp80 on x86-64. The host's stand, and the device module's copies go.
+static void dropSharedModuleFlags(Module &device, const Module &host) {
+  NamedMDNode *flags = device.getModuleFlagsMetadata();
+  if (!flags)
+    return;
+  SmallVector<MDNode *> kept;
+  for (MDNode *flag : flags->operands()) {
+    auto *key = flag->getNumOperands() == 3
+                    ? dyn_cast<MDString>(flag->getOperand(1))
+                    : nullptr;
+    if (key && host.getModuleFlag(key->getString()))
+      continue;
+    kept.push_back(flag);
+  }
+  flags->clearOperands();
+  for (MDNode *flag : kept)
+    flags->addOperand(flag);
+}
+
 static std::string reExportPath(llvm::StringRef src, bool besideSource) {
   if (besideSource)
     return (src + ".re_export").str();
@@ -803,9 +853,13 @@ public:
         }
       }
 
+      dropSharedModuleFlags(*mod2, M);
       auto handler = M.getContext().getDiagnosticHandler();
       Linker L(M);
-      L.linkInModule(std::move(mod2));
+      if (L.linkInModule(std::move(mod2))) {
+        llvm::errs() << "LLVMToMLIR: could not link the device module\n";
+        exit(1);
+      }
       M.getContext().setDiagnosticHandler(std::move(handler));
       for (auto name : toInternalize)
         if (auto F = M.getFunction(name)) {
@@ -989,6 +1043,18 @@ public:
     if (SpecializeIndexStrides.getNumOccurrences() == 0)
       if (const char *env = getenv("REACTANT_SPECIALIZE_INDEX_STRIDES"))
         specializeIndexStrides = env[0] && env[0] != '0';
+    int unrollMaxTripCount = UnrollMaxTripCount.getValue();
+    if (UnrollMaxTripCount.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_UNROLL_MAX_TRIP_COUNT"))
+        unrollMaxTripCount = atoi(env);
+    int unrollMaxNestedOps = UnrollMaxNestedOps.getValue();
+    if (UnrollMaxNestedOps.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_UNROLL_MAX_NESTED_OPS"))
+        unrollMaxNestedOps = atoi(env);
+    bool specializeIntScalars = SpecializeIntScalars.getValue();
+    if (SpecializeIntScalars.getNumOccurrences() == 0)
+      if (const char *env = getenv("REACTANT_SPECIALIZE_INT_SCALARS"))
+        specializeIntScalars = env[0] && env[0] != '0';
     MLIRRoundTripOptions options{
         .dataflow = DataFlowActivity.getValue(),
         .markReadonly = MarkReadOnly.getValue(),
@@ -1003,6 +1069,9 @@ public:
         .lateSink = lateSink,
         .exportMLIROnly = ExportMLIROnly.getValue(),
         .specializeIndexStrides = specializeIndexStrides,
+        .unrollMaxTripCount = unrollMaxTripCount,
+        .unrollMaxNestedOps = unrollMaxNestedOps,
+        .specializeIntScalars = specializeIntScalars,
     };
 
 #if REACTANT_USE_LINKED_RAISE 
@@ -1060,6 +1129,25 @@ public:
       llvm::errs() << " newMod: " << newMod << "\n";
       Err.print(/*ProgName=*/"LLVMToMLIR", llvm::errs());
       exit(1);
+    }
+    // Functions raised out of the device module keep their NVPTX target
+    // attributes; the host backend rejects sm_* CPUs outright.
+    for (llvm::Function &F : *llvmModule) {
+      bool nvAttrs =
+          F.hasFnAttribute("target-cpu") &&
+          F.getFnAttribute("target-cpu").getValueAsString().starts_with("sm_");
+      // A function can also carry only the NVPTX feature string, which
+      // leaves the host backend on a subtarget without 64-bit support.
+      if (!nvAttrs && F.hasFnAttribute("target-features")) {
+        auto feats =
+            F.getFnAttribute("target-features").getValueAsString();
+        nvAttrs = feats.contains("+ptx") || feats.contains("sm_");
+      }
+      if (nvAttrs) {
+        F.removeFnAttr("target-cpu");
+        F.removeFnAttr("target-features");
+        F.removeFnAttr("tune-cpu");
+      }
     }
     auto handler = M.getContext().getDiagnosticHandler();
     Linker L(M);
