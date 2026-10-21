@@ -33,7 +33,7 @@ jobs:
       matrix:
         build: ["Release"] # "RelWithDebInfo"
         llbuild: ["Release"]
-        os: [linux-x86-n2-32]
+        os: [linux-x86-n4-32]
 
     timeout-minutes: 500
 
@@ -175,7 +175,7 @@ jobs:
 
     - name: Update Nightly Release
       uses: ncipollo/release-action@v1
-      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n4-32' }} 
       with:
         tag: nightly
         name: Nightly Release
