@@ -43,9 +43,9 @@
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/StringSet.h"
 
 #include "Enzyme/Utils.h"
 
@@ -87,13 +87,9 @@ static const std::string &offloadBinaryToEmbedFile(const T &Opts) {
 
 std::vector<std::string> GlobalOptimizationRules;
 
-struct TesseraArgTypeGlobalInfo {
-  unsigned idx;
-  QualType type;
-  SourceLocation loc;
-};
-
-static std::vector<TesseraArgTypeGlobalInfo> TesseraArgTypeGlobals;
+// Globals whose type is that of the value behind an argument of a tessera op;
+// see makeTesseraArgTypeCarriers.
+static std::vector<VarDecl *> TesseraArgTypeCarriers;
 
 // Tessera ops whose declaration must be forced into the module; see
 // emitTesseraOpRefGlobals.
@@ -102,10 +98,10 @@ static std::vector<FunctionDecl *> TesseraOpFunctions;
 // A fact stated on a statement, waiting for the call to its marker to be
 // spliced in after that statement; see handleTesseraFactStatement.
 struct TesseraFactSite {
-  Stmt *St;
-  Expr *Call;
-  FunctionDecl *Marker;
-  bool Placed = false;
+  Stmt *stmt;
+  Expr *call;
+  FunctionDecl *marker;
+  bool placed = false;
 };
 
 static std::vector<TesseraFactSite> TesseraFactSites;
@@ -138,74 +134,74 @@ protected:
 /// `mfem::IntRules` and `mfem::Geometry::CUBE`, looked up from file scope as a
 /// name written there is: each qualifier is a namespace, a class or an enum.
 /// Only the variable or enumerator a rule can use is returned.
-static NamedDecl *lookupRuleDecl(Sema &S, StringRef Name) {
-  Name.consume_front("::");
-  SmallVector<StringRef, 4> Parts;
-  Name.split(Parts, "::");
+static NamedDecl *lookupRuleDecl(Sema &S, StringRef name) {
+  name.consume_front("::");
+  SmallVector<StringRef, 4> parts;
+  name.split(parts, "::");
   DeclContext *DC = S.getASTContext().getTranslationUnitDecl();
-  for (size_t I = 0, E = Parts.size(); I != E; ++I) {
-    bool Last = I + 1 == E;
-    DeclarationName DN(&S.getASTContext().Idents.get(Parts[I]));
-    DeclContext *Next = nullptr;
+  for (size_t i = 0, e = parts.size(); i != e; ++i) {
+    bool last = i + 1 == e;
+    DeclarationName DN(&S.getASTContext().Idents.get(parts[i]));
+    DeclContext *next = nullptr;
     for (NamedDecl *D : DC->lookup(DN)) {
-      if (Last && (isa<EnumConstantDecl>(D) || isa<VarDecl>(D)))
+      if (last && (isa<EnumConstantDecl>(D) || isa<VarDecl>(D)))
         return D;
-      if (!Last && (isa<NamespaceDecl>(D) || isa<CXXRecordDecl>(D) ||
+      if (!last && (isa<NamespaceDecl>(D) || isa<CXXRecordDecl>(D) ||
                     isa<EnumDecl>(D))) {
-        Next = cast<DeclContext>(D);
+        next = cast<DeclContext>(D);
         break;
       }
     }
-    if (!Next)
+    if (!next)
       return nullptr;
-    DC = Next;
+    DC = next;
   }
   return nullptr;
 }
 
-/// The value of the C name `Name` in the syntax of a rule, if it has one that
+/// The value of the C name `name` in the syntax of a rule, if it has one that
 /// a rule can hold: an enumerator becomes its value, a macro that expands to a
 /// single integer or string becomes that literal, and a global variable
 /// becomes its symbol, `@name`, which the rule passes the address of. A macro
-/// that expands to another name is followed. A global is added to `Globals`,
+/// that expands to another name is followed. A global is added to `globals`,
 /// for the caller to keep in the module.
 static std::optional<std::string>
-resolveRuleName(Sema &S, StringRef Name, SmallVectorImpl<VarDecl *> &Globals,
-                unsigned Depth = 0) {
-  if (Depth > 8)
+resolveRuleName(Sema &S, StringRef name, SmallVectorImpl<VarDecl *> &globals,
+                unsigned depth = 0) {
+  if (depth > 8)
     return std::nullopt;
   Preprocessor &PP = S.getPreprocessor();
   IdentifierInfo *II =
-      Name.contains(':') ? nullptr : PP.getIdentifierInfo(Name);
+      name.contains(':') ? nullptr : PP.getIdentifierInfo(name);
 
   if (const MacroInfo *MI = II ? PP.getMacroInfo(II) : nullptr) {
     if (!MI->isObjectLike() || MI->getNumTokens() != 1)
       return std::nullopt;
-    const Token &T = MI->getReplacementToken(0);
-    std::string Spelling = PP.getSpelling(T);
-    switch (T.getKind()) {
+    const Token &tok = MI->getReplacementToken(0);
+    std::string spelling = PP.getSpelling(tok);
+    switch (tok.getKind()) {
     case tok::string_literal: {
       // Only a plain "..." with nothing in it a rule string cannot hold.
-      StringRef Text(Spelling);
-      if (!Text.consume_front("\"") || !Text.consume_back("\"") ||
-          Text.find_first_of("\\'") != StringRef::npos)
+      StringRef text(spelling);
+      if (!text.consume_front("\"") || !text.consume_back("\"") ||
+          text.find_first_of("\\'") != StringRef::npos)
         return std::nullopt;
-      return "'" + Text.str() + "'";
+      return "'" + text.str() + "'";
     }
     case tok::numeric_constant: {
-      int64_t Value;
-      if (StringRef(Spelling).getAsInteger(0, Value))
+      int64_t value;
+      if (StringRef(spelling).getAsInteger(0, value))
         return std::nullopt;
-      return std::to_string(Value);
+      return std::to_string(value);
     }
     case tok::identifier:
-      return resolveRuleName(S, Spelling, Globals, Depth + 1);
+      return resolveRuleName(S, spelling, globals, depth + 1);
     default:
       return std::nullopt;
     }
   }
 
-  NamedDecl *D = lookupRuleDecl(S, Name);
+  NamedDecl *D = lookupRuleDecl(S, name);
   if (auto *ECD = dyn_cast_or_null<EnumConstantDecl>(D))
     return toString(ECD->getInitVal(), 10);
   // A global object, whose address the rule passes. A reference has no object
@@ -215,215 +211,133 @@ resolveRuleName(Sema &S, StringRef Name, SmallVectorImpl<VarDecl *> &Globals,
         VD->getType()->isReferenceType() ||
         VD->getTLSKind() != VarDecl::TLS_None)
       return std::nullopt;
-    Globals.push_back(VD);
+    globals.push_back(VD);
     return "@" + ASTNameGenerator(S.getASTContext()).getName(VD);
   }
   return std::nullopt;
 }
 
-/// Replace the C names in the condition and on the right-hand side of `Rule`
-/// with their values, so that a rule written in a library's header can use
-/// the library's own names for its constants and globals, as `MAT_SPD`,
-/// `mfem::Geometry::CUBE` or `mfem::IntRules`: Tessera sees the rule long
-/// after those names are gone, and only understands numbers, strings and
-/// symbols.
-///
-/// Only a name the left-hand side does not bind is looked up, which is one the
-/// rule could not otherwise use, so no rule that worked before changes. A name
-/// that is part of a call, as the `petsc` and `ksp_set_type` of
-/// `petsc.ksp_set_type(...)`, is left alone, and so is one with no value: the
-/// rule parser reports it as unbound.
-static std::string resolveRuleNames(Sema &S, StringRef Rule,
-                                    SmallVectorImpl<VarDecl *> &Globals) {
-  size_t Arrow = Rule.find("->");
-  if (Arrow == StringRef::npos)
-    return Rule.str();
-
-  // Numbers are skipped whole, so that the exponent of `1e3` is not taken for
-  // a name.
-  auto skipNumber = [&](size_t I) {
-    size_t J = I;
-    while (J < Rule.size() &&
-           (isAsciiIdentifierContinue(Rule[J]) || Rule[J] == '.' ||
-            ((Rule[J] == '-' || Rule[J] == '+') &&
-             (Rule[J - 1] == 'e' || Rule[J - 1] == 'E'))))
-      ++J;
-    return J;
-  };
-  // A qualified C++ name, `mfem::Geometry::CUBE`, is one name.
-  auto qualifies = [&](size_t J) {
-    return J + 2 < Rule.size() && Rule[J] == ':' && Rule[J + 1] == ':' &&
-           isAsciiIdentifierStart(Rule[J + 2]);
-  };
-  auto skipName = [&](size_t I) {
-    size_t J = I;
-    while (true) {
-      while (J < Rule.size() && isAsciiIdentifierContinue(Rule[J]))
-        ++J;
-      if (!qualifies(J))
-        return J;
-      J += 2;
+/// Every identifier in `text` that is not part of a call, a qualified C++ one
+/// such as `mfem::IntRules` counting as one. A call's names, the `lib` and
+/// `solve` of `lib.solve(A)` or the `SPD` of `SPD(A)`, are never a variable or
+/// a value, and are left out so that a C name they happen to match is not
+/// looked up.
+static SmallVector<StringRef> findNonCallIdentifiers(StringRef text) {
+  SmallVector<StringRef> identifiers;
+  for (size_t i = 0, n = text.size(); i < n;) {
+    // A run of identifier characters, with `::` joining its parts.
+    size_t j = i;
+    while (j < n && (isAsciiIdentifierContinue(text[j]) ||
+                     text.substr(j).starts_with("::")))
+      j += text[j] == ':' ? 2 : 1;
+    // One starting with a digit is a number, whose letters, as the exponent
+    // of `1e3`, are not an identifier.
+    if (j > i && !isDigit(text[i])) {
+      StringRef before = text.take_front(i).rtrim();
+      StringRef after = text.drop_front(j).ltrim();
+      bool partOfCall = before.ends_with(".") || after.starts_with(".") ||
+                        after.starts_with("(");
+      if (!partOfCall)
+        identifiers.push_back(text.slice(i, j));
     }
-  };
-
-  // A condition, `if cond, lhs -> rhs`, ends at the first ',' outside
-  // parentheses and quotes; what follows it, up to the arrow, is what the
-  // rule matches.
-  size_t CondBegin = 0, LhsBegin = 0;
-  size_t First = Rule.find_first_not_of(" \t\n");
-  if (First != StringRef::npos && Rule.substr(First).starts_with("if") &&
-      First + 2 < Arrow && !isAsciiIdentifierContinue(Rule[First + 2])) {
-    CondBegin = First + 2;
-    int Depth = 0;
-    for (size_t I = CondBegin; I < Arrow; ++I) {
-      if (Rule[I] == '\'') {
-        size_t J = Rule.find('\'', I + 1);
-        I = J == StringRef::npos ? Arrow : J;
-      } else if (Rule[I] == '(')
-        ++Depth;
-      else if (Rule[I] == ')')
-        --Depth;
-      else if (Rule[I] == ',' && Depth == 0) {
-        LhsBegin = I + 1;
-        break;
-      }
-    }
-    // No ',': not a rule the parser accepts, so it is left as written.
-    if (LhsBegin == 0)
-      CondBegin = 0;
+    i = std::max(j, i + 1);
   }
-
-  // Every name in what the rule matches. Besides the variables it binds, this
-  // takes in op names, which is harmless: they are never looked up anyway.
-  llvm::StringSet<> Bound;
-  for (size_t I = LhsBegin; I < Arrow;) {
-    if (isDigit(Rule[I]))
-      I = skipNumber(I);
-    else if (isAsciiIdentifierStart(Rule[I])) {
-      size_t J = skipName(I);
-      Bound.insert(Rule.slice(I, J));
-      I = J;
-    } else
-      ++I;
-  }
-
-  std::string Out;
-  size_t N = Rule.size();
-  auto resolve = [&](size_t Begin, size_t End) {
-    for (size_t I = Begin; I < End;) {
-      char C = Rule[I];
-      if (C == '\'') {
-        size_t J = Rule.find('\'', I + 1);
-        J = J == StringRef::npos ? N : J + 1;
-        Out += Rule.slice(I, J);
-        I = J;
-        continue;
-      }
-      if (isDigit(C)) {
-        size_t J = skipNumber(I);
-        Out += Rule.slice(I, J);
-        I = J;
-        continue;
-      }
-      // `::mfem::IntRules`, from the global namespace.
-      if (!isAsciiIdentifierStart(C) && !qualifies(I)) {
-        Out += C;
-        ++I;
-        continue;
-      }
-
-      size_t J = skipName(I);
-      StringRef Name = Rule.slice(I, J);
-      size_t Before = I, After = J;
-      while (Before > 0 && isWhitespace(Rule[Before - 1]))
-        --Before;
-      while (After < N && isWhitespace(Rule[After]))
-        ++After;
-      bool PartOfCall =
-          (Before > 0 && Rule[Before - 1] == '.') ||
-          (After < N && (Rule[After] == '.' || Rule[After] == '('));
-
-      std::optional<std::string> Value;
-      if (!PartOfCall && !Bound.contains(Name))
-        Value = resolveRuleName(S, Name, Globals);
-      Out += Value ? *Value : Name.str();
-      I = J;
-    }
-  };
-  // With no condition, CondBegin and LhsBegin are both 0.
-  Out += Rule.take_front(CondBegin);
-  resolve(CondBegin, LhsBegin);
-  Out += Rule.slice(LhsBegin, Arrow + 2);
-  resolve(Arrow + 2, N);
-  return Out;
+  return identifiers;
 }
 
-static void emitOptimizationRules(Sema &S, std::vector<std::string> &Rules) {
+// A global that is there only to carry annotations into the module:
+//   static int <Name> __attribute__((used, annotate(...), ...)) = 0;
+static void emitAnnotationCarrier(Sema &S, const Twine &name,
+                                  ArrayRef<std::string> annotations) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc;
+  DeclContext *declCtx = AST.getTranslationUnitDecl();
+  auto *VD =
+      VarDecl::Create(AST, declCtx, loc, loc, &AST.Idents.get(name.str()),
+                      AST.IntTy, nullptr, SC_Static);
+  VD->setImplicit(true);
+  VD->setInit(IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
+  VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+  for (const std::string &annotation : annotations)
+    VD->addAttr(AnnotateAttr::CreateImplicit(AST, annotation, nullptr, 0));
+  declCtx->addDecl(VD);
+  S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+}
+
+/// Put each rule in the module, with the value of each C name in the rules
+/// that has one: a library's header can write a rule with the library's own
+/// names for its constants and globals, as `MAT_SPD`, `mfem::Geometry::CUBE`
+/// or `mfem::IntRules`, and Tessera sees the rule long after those names are
+/// gone. Which names a rule uses as values is for lift-tessera-annotations to
+/// say, which puts the values in their place.
+static void emitOptimizationRules(Sema &S, ArrayRef<std::string> rules) {
   auto &AST = S.getASTContext();
   SourceLocation loc;
   DeclContext *declCtx = AST.getTranslationUnitDecl();
 
-  // Resolved here rather than when the pragma is read, since a rule may name
+  // Looked up here rather than when the pragma is read, since a rule may name
   // constants declared after it.
-  SmallVector<VarDecl *> Globals;
-  for (std::string &Rule : Rules)
-    Rule = resolveRuleNames(S, Rule, Globals);
+  llvm::SetVector<StringRef> names;
+  for (const std::string &rule : rules)
+    for (StringRef name : findNonCallIdentifiers(rule))
+      names.insert(name);
+  SmallVector<std::string> values;
+  SmallVector<VarDecl *> globals;
+  for (StringRef name : names)
+    if (std::optional<std::string> value = resolveRuleName(S, name, globals))
+      values.push_back(("tessera_name=" + name + "=" + *value).str());
 
   // A global a rule names is only in the module if something uses it, which
   // may be nothing but the rule:
   //   static <type> *__tessera_global_ref_N __attribute__((used)) = &global;
-  llvm::SmallPtrSet<VarDecl *, 4> Pinned;
-  for (VarDecl *Global : Globals) {
-    if (!Pinned.insert(Global).second)
+  llvm::SmallPtrSet<VarDecl *, 4> pinned;
+  for (VarDecl *global : globals) {
+    if (!pinned.insert(global).second)
       continue;
-    QualType RefTy = AST.getPointerType(Global->getType());
-    auto *DR = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, Global,
-                                   false, loc, Global->getType(),
-                                   ExprValueKind::VK_LValue, Global, nullptr);
-    auto *Ref = UnaryOperator::Create(
-        AST, DR, UnaryOperatorKind::UO_AddrOf, RefTy, ExprValueKind::VK_PRValue,
+    QualType refTy = AST.getPointerType(global->getType());
+    auto *DR = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, global,
+                                   false, loc, global->getType(),
+                                   ExprValueKind::VK_LValue, global, nullptr);
+    auto *ref = UnaryOperator::Create(
+        AST, DR, UnaryOperatorKind::UO_AddrOf, refTy, ExprValueKind::VK_PRValue,
         ExprObjectKind::OK_Ordinary, loc, /*CanOverflow=*/false,
         FPOptionsOverride());
     auto &Id = AST.Idents.get("__tessera_global_ref_" +
-                              std::to_string(Pinned.size() - 1));
+                              std::to_string(pinned.size() - 1));
     auto *VD =
-        VarDecl::Create(AST, declCtx, loc, loc, &Id, RefTy, nullptr, SC_Static);
+        VarDecl::Create(AST, declCtx, loc, loc, &Id, refTy, nullptr, SC_Static);
     VD->setImplicit(true);
-    VD->setInit(Ref);
+    VD->setInit(ref);
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
-    S.MarkVariableReferenced(loc, Global);
+    S.MarkVariableReferenced(loc, global);
     declCtx->addDecl(VD);
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
   }
 
-  // create global variable for each optimization string
-  for (size_t i = 0, e = Rules.size(); i != e; ++i) {
-    auto &Id = AST.Idents.get("__tessera_optimize_rule_" + std::to_string(i));
-    auto VD = VarDecl::Create(AST, declCtx, loc, loc, &Id, AST.IntTy, nullptr,
-                              SC_Static);
-    VD->setImplicit(true);
-    VD->setInit(
-        IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
-    VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
-    VD->addAttr(AnnotateAttr::CreateImplicit(
-        AST, ("tessera_optimize=" + Rules[i]).c_str(), nullptr, 0));
-    declCtx->addDecl(VD);
-    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
-  }
+  for (size_t i = 0, e = rules.size(); i != e; ++i)
+    emitAnnotationCarrier(S, "__tessera_optimize_rule_" + Twine(i),
+                          {"tessera_optimize=" + rules[i]});
+  if (!values.empty())
+    emitAnnotationCarrier(S, "__tessera_names", values);
 }
 
-static void
-emitTesseraArgTypeGlobals(Sema &S,
-                          std::vector<TesseraArgTypeGlobalInfo> &Globals) {
+// Emit each argument type carrier whose type is complete by now:
+//   static <type> __tessera_arg_type_N __attribute__((used)) = {};
+// It is never constructed, so it is never destroyed either: it is only there
+// for its type, and lift-tessera-annotations erases it.
+static void emitTesseraArgTypeCarriers(Sema &S) {
   auto &AST = S.getASTContext();
   DeclContext *declCtx = AST.getTranslationUnitDecl();
-  for (auto &info : Globals) {
-    auto &Id = AST.Idents.get("__tessera_arg_type_" + std::to_string(info.idx));
-    auto *VD = VarDecl::Create(AST, declCtx, info.loc, info.loc, &Id, info.type,
-                               nullptr, SC_Static);
-    VD->setImplicit(true);
-    VD->setInit(new (AST) ImplicitValueInitExpr(info.type));
+  for (VarDecl *VD : TesseraArgTypeCarriers) {
+    QualType type = VD->getType();
+    if (!type->isObjectType() || type->isIncompleteType() ||
+        type->isVariablyModifiedType())
+      continue;
+    if (auto *RD = type->getAsCXXRecordDecl(); RD && RD->isAbstract())
+      continue;
+    VD->setInit(new (AST) ImplicitValueInitExpr(type));
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+    VD->addAttr(NoDestroyAttr::CreateImplicit(AST));
     declCtx->addDecl(VD);
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
   }
@@ -431,12 +345,12 @@ emitTesseraArgTypeGlobals(Sema &S,
 
 // Emit a used global holding the function's address so that the declaration is
 // created and clang emits the tessera annotation..
-static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
+static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &fns) {
   auto &AST = S.getASTContext();
   DeclContext *declCtx = AST.getTranslationUnitDecl();
   unsigned counter = 0;
 
-  for (auto *FD : Fns) {
+  for (auto *FD : fns) {
     // A definition in this TU is already pinned by the `used` attribute.
     if (FD->hasBody() || FD->isDeleted())
       continue;
@@ -480,7 +394,7 @@ static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
     auto *DR = DeclRefExpr::Create(
         AST, NestedNameSpecifierLoc(), loc, cast<ValueDecl>(FD), false, loc,
         FD->getType(), ExprValueKind::VK_LValue, cast<NamedDecl>(FD), nullptr);
-    auto *Ref = UnaryOperator::Create(
+    auto *ref = UnaryOperator::Create(
         AST, DR, UnaryOperatorKind::UO_AddrOf, refTy, ExprValueKind::VK_PRValue,
         ExprObjectKind::OK_Ordinary, loc,
         /*CanOverflow=*/false, FPOptionsOverride());
@@ -489,7 +403,7 @@ static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
     auto *VD =
         VarDecl::Create(AST, declCtx, loc, loc, &Id, refTy, nullptr, SC_Static);
     VD->setImplicit(true);
-    VD->setInit(Ref);
+    VD->setInit(ref);
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
     S.MarkFunctionReferenced(loc, FD);
     declCtx->addDecl(VD);
@@ -498,27 +412,27 @@ static void emitTesseraOpRefGlobals(Sema &S, std::vector<FunctionDecl *> &Fns) {
 }
 
 // Put each pending fact's marker call right after the statement it was stated
-// on, anywhere below `Parent`: the statement is replaced in its parent by
+// on, anywhere below `parent`: the statement is replaced in its parent by
 // `{ statement; marker(...); }`, so the call runs once the statement has.
-static void spliceTesseraFacts(ASTContext &AST, Stmt *Parent) {
-  for (Stmt *&Child : Parent->children()) {
-    if (!Child)
+static void spliceTesseraFacts(ASTContext &AST, Stmt *parent) {
+  for (Stmt *&child : parent->children()) {
+    if (!child)
       continue;
-    Stmt *Original = Child;
-    spliceTesseraFacts(AST, Original);
-    SmallVector<Stmt *> Stmts;
-    for (TesseraFactSite &Site : TesseraFactSites) {
-      if (Site.Placed || Site.St != Original)
+    Stmt *original = child;
+    spliceTesseraFacts(AST, original);
+    SmallVector<Stmt *> stmts;
+    for (TesseraFactSite &site : TesseraFactSites) {
+      if (site.placed || site.stmt != original)
         continue;
-      if (Stmts.empty())
-        Stmts.push_back(Original);
-      Stmts.push_back(Site.Call);
-      Site.Placed = true;
+      if (stmts.empty())
+        stmts.push_back(original);
+      stmts.push_back(site.call);
+      site.placed = true;
     }
-    if (!Stmts.empty())
-      Child =
-          CompoundStmt::Create(AST, Stmts, FPOptionsOverride(),
-                               Original->getBeginLoc(), Original->getEndLoc());
+    if (!stmts.empty())
+      child =
+          CompoundStmt::Create(AST, stmts, FPOptionsOverride(),
+                               original->getBeginLoc(), original->getEndLoc());
   }
 }
 
@@ -527,31 +441,31 @@ static void spliceTesseraFacts(ASTContext &AST, Stmt *Parent) {
 // first.
 static void spliceTesseraFacts(ASTContext &AST, Decl *D) {
   if (llvm::all_of(TesseraFactSites,
-                   [](const TesseraFactSite &Site) { return Site.Placed; }))
+                   [](const TesseraFactSite &site) { return site.placed; }))
     return;
   if (auto *FD = dyn_cast<FunctionDecl>(D)) {
-    if (Stmt *Body = FD->getBody())
-      spliceTesseraFacts(AST, Body);
+    if (Stmt *body = FD->getBody())
+      spliceTesseraFacts(AST, body);
     return;
   }
   // A namespace or an extern "C" block reaches the consumer whole.
   if (auto *DC = dyn_cast<DeclContext>(D))
-    for (Decl *Inner : DC->decls())
-      spliceTesseraFacts(AST, Inner);
+    for (Decl *inner : DC->decls())
+      spliceTesseraFacts(AST, inner);
 }
 
 // Emit the marker of each fact that was placed, and say which could not be.
 static void emitTesseraFactMarkers(Sema &S) {
-  for (TesseraFactSite &Site : TesseraFactSites) {
-    if (Site.Placed) {
-      S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(Site.Marker));
+  for (TesseraFactSite &site : TesseraFactSites) {
+    if (site.placed) {
+      S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(site.marker));
       continue;
     }
     unsigned ID = S.getDiagnostics().getCustomDiagID(
         DiagnosticsEngine::Warning,
         "the fact stated here could not be placed in the function it is "
         "stated in; it is ignored");
-    S.Diag(Site.St->getBeginLoc(), ID);
+    S.Diag(site.stmt->getBeginLoc(), ID);
   }
 }
 
@@ -691,7 +605,7 @@ public:
   void HandleTranslationUnit(ASTContext &Context) override {
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
-    emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
+    emitTesseraArgTypeCarriers(S);
     emitTesseraOpRefGlobals(S, TesseraOpFunctions);
     emitTesseraFactMarkers(S);
   }
@@ -1059,595 +973,181 @@ struct EnzymeFunctionLikeAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
     X4("enzyme_function_like", "");
 
-static ParsedAttrInfo::AttrHandling
-handleTesseraOpAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
-                         StringRef attrName) {
-  // A malformed tessera annotation only costs the rewrites it would have
-  // allowed, so it is reported as a warning and left out, and the function
-  // compiles as though it were not there.
-  if (Attr.getNumArgs() < 1) {
-    unsigned ID = S.getDiagnostics().getCustomDiagID(
-        DiagnosticsEngine::Warning,
-        "'%0' attribute requires at least a string argument; it is ignored");
-    S.Diag(Attr.getLoc(), ID) << attrName;
-    return ParsedAttrInfo::AttributeNotApplied;
-  }
-
-  // Parse the first arg as the op string
-  auto *Arg0 = Attr.getArgAsExpr(0);
-  StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
-  if (!Literal) {
-    unsigned ID = S.getDiagnostics().getCustomDiagID(
-        DiagnosticsEngine::Warning, "first argument to '%0' attribute must be "
-                                    "a string literal; it is ignored");
-    S.Diag(Attr.getLoc(), ID) << attrName;
-    return ParsedAttrInfo::AttributeNotApplied;
-  }
-
-  // Scan for val=in, val=out, and val=inout argument positions
-  StringRef opStr = Literal->getString();
-  bool hasArgList = opStr.contains('(');
-  StringRef argList = opStr.slice(opStr.find('(') + 1, opStr.find(')'));
-  SmallVector<unsigned> positionsToLift;
-  unsigned numListedArgs = 0;
-  if (!argList.trim().empty()) {
-    SmallVector<StringRef> argParts;
-    argList.split(argParts, ',');
-    numListedArgs = argParts.size();
-    for (auto [idx, arg] : llvm::enumerate(argParts)) {
-      arg = arg.trim();
-      StringRef marker = arg.split(':').second.trim();
-      if (marker.starts_with("val="))
-        positionsToLift.push_back(idx);
-    }
-  }
-
-  // Emit a global for each marked parameter
-  auto FD = cast<FunctionDecl>(D);
-  DeclContext *declCtx = D->getDeclContext();
-  for (auto tmpCtx = declCtx; tmpCtx; tmpCtx = tmpCtx->getParent()) {
-    if (tmpCtx->isRecord()) {
-      declCtx = tmpCtx->getParent();
-    }
-  }
-  auto params = FD->parameters();
-  auto loc = FD->getLocation();
-
-  // A non-static C++ member function receives the object as an implicit
-  // leading `this` pointer, which is argument 0 of the emitted LLVM function
-  // but is absent from FD->parameters(). Positions in the op string name the
-  // call's arguments, so `this` occupies position 0 and the explicit
-  // parameters shift over by one:
-  //
-  //   struct Mat {
-  //     [[tessera::op("mfem.mult(this:val=in, x, y:val=out)")]]
-  //     void Mult(const Vec &x, Vec &y) const;
-  //   };
-  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-  bool hasImplicitThis = MD && MD->isInstance();
-
-  // The lowering requires one entry in the arg list per function argument
-  // (`this` included).
-  unsigned numExpectedArgs = params.size() + (hasImplicitThis ? 1 : 0);
-  // Lifting a function whose argument list does not line up with it would
-  // produce a tessera.define that does not verify.
-  if (hasArgList && numListedArgs != numExpectedArgs) {
-    unsigned ID = S.getDiagnostics().getCustomDiagID(
-        DiagnosticsEngine::Warning,
-        "'%0' argument list names %1 argument(s) but %2 takes %3%4; positions "
-        "in the argument list must match the function's arguments one for "
-        "one; it is ignored");
-    S.Diag(Attr.getLoc(), ID)
-        << attrName << numListedArgs << FD << numExpectedArgs
-        << (hasImplicitThis ? " (counting the implicit 'this')" : "");
-    return ParsedAttrInfo::AttributeNotApplied;
-  }
-
-  static unsigned globalCounter = 0;
-  SmallVector<unsigned> liftedArgGlobalIndices;
-
-  for (unsigned idx : positionsToLift) {
-    QualType pointeeTy;
-    if (hasImplicitThis && idx == 0) {
-      // The pointee of `this` is the (possibly const-qualified) class type.
-      pointeeTy = MD->getThisType()->getPointeeType();
-    } else {
-      unsigned paramIdx = idx - (hasImplicitThis ? 1 : 0);
-      if (paramIdx >= params.size())
-        continue;
-      pointeeTy = params[paramIdx]->getType();
-      if (pointeeTy->isPointerType() || pointeeTy->isReferenceType())
-        pointeeTy = (pointeeTy->getPointeeType());
-    }
-
-    pointeeTy = pointeeTy.getUnqualifiedType();
-
-    unsigned thisIdx = globalCounter++;
-    liftedArgGlobalIndices.push_back(thisIdx);
-    TesseraArgTypeGlobals.push_back({thisIdx, pointeeTy, loc});
-  }
-
-  // Build annotation string: "tessera_op=eigen.inv(x:val=in, y):3,4"
-  std::string annotation = (attrName + "=" + opStr).str();
-
-  // Parse remaining args representing sizes of function parameters
-  for (auto [i, idx] : llvm::enumerate(liftedArgGlobalIndices)) {
-    annotation += (i == 0 ? ":globals=" : ",") + std::to_string(idx);
-  }
-
-  auto &AST = S.getASTContext();
-  D->addAttr(
-      AnnotateAttr::Create(AST, annotation, nullptr, 0, Attr.getRange()));
-  D->addAttr(clang::UsedAttr::CreateImplicit(AST));
-  TesseraOpFunctions.push_back(FD);
-  return ParsedAttrInfo::AttributeApplied;
-}
-
-struct TesseraOpAttrInfo : public ParsedAttrInfo {
-  TesseraOpAttrInfo() {
-    OptArgs = 15;
-    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
-    // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "tessera_op"},
-#if LLVM_VERSION_MAJOR > 17
-                                     {ParsedAttr::AS_C23, "tessera_op"},
-#else
-                                     {ParsedAttr::AS_C2x, "tessera_op"},
-#endif
-                                     {ParsedAttr::AS_CXX11, "tessera_op"},
-                                     {ParsedAttr::AS_CXX11, "tessera::op"}};
-    Spellings = S;
-  }
-
-  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
-                            const Decl *D) const override {
-    // This attribute appertains to functions only.
-    if (!isa<FunctionDecl>(D)) {
-      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
-          << Attr << "functions";
-      return false;
-    }
-    return true;
-  }
-
-  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
-                                   const ParsedAttr &Attr) const override {
-    return handleTesseraOpAttribute(S, D, Attr, "tessera_op");
-  }
-};
-
-static ParsedAttrInfoRegistry::Add<TesseraOpAttrInfo> T1("tessera_op", "");
-
-struct PureTesseraOpAttrInfo : public ParsedAttrInfo {
-  PureTesseraOpAttrInfo() {
-    OptArgs = 15;
-    // GNU-style __attribute__(("example")) and C++/C2x-style [[example]] and
-    // [[plugin::example]] supported.
-    static constexpr Spelling S[] = {
-        {ParsedAttr::AS_GNU, "pure_tessera_op"},
-#if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "pure_tessera_op"},
-#else
-        {ParsedAttr::AS_C2x, "pure_tessera_op"},
-#endif
-        {ParsedAttr::AS_CXX11, "pure_tessera_op"},
-        {ParsedAttr::AS_CXX11, "tessera::pure_op"}};
-    Spellings = S;
-  }
-
-  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
-                            const Decl *D) const override {
-    // This attribute appertains to functions only.
-    if (!isa<FunctionDecl>(D)) {
-      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
-          << Attr << "functions";
-      return false;
-    }
-    return true;
-  }
-
-  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
-                                   const ParsedAttr &Attr) const override {
-    return handleTesseraOpAttribute(S, D, Attr, "pure_tessera_op");
-  }
-};
-
-static ParsedAttrInfoRegistry::Add<PureTesseraOpAttrInfo> T2("pure_tessera_op",
-                                                             "");
-
-// A property of a function's inputs or outputs: a name like "SPD" or
-// "symmetric" that a rule's condition can test, `if SPD(A), ...`.
-//
-//   [[tessera::guarantees("SPD")]]         the return value is always SPD
-//   [[tessera::guarantees("SPD(M)")]]      parameter M is always SPD once it
-//                                          returns
-//   [[tessera::assumes("SPD(A)", "symmetric(B)")]]
-//       A is always SPD and B always symmetric when the function is called
-//   [[tessera::preserves("SPD", "A", "B")]]
-//       the output is SPD whenever A and B both are: the return value, or the
-//       one parameter the tessera_op writes if it returns nothing
-//   [[tessera::readonly("A")]]
-//       the function does not change the object pointer A refers to
-//
-// A guarantee on a pointer the function takes as it is -- a handle, such as a
-// PETSc Mat -- is about the object it refers to, from the call on:
-//
-//   PetscErrorCode FillCOO(Mat A, void *ctx)
-//       __attribute__((tessera_guarantees("SPD(A)")));
-//   PetscErrorCode MatMult(Mat A, Vec x, Vec y)
-//       __attribute__((tessera_readonly("A")));
-//
-// Then a later call given A can rely on it being SPD, as long as every call
-// given A in between is readonly in it. A guarantee or assumption can also be
-// stated on a statement, of a variable in scope, for a handle built in place 
-// rather than by a function (see handleTesseraFactStatement):
-//
-//   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
-//   __attribute__((tessera_guarantees("SPD(A)")));
-//
-// A guarantee or assumption may state several facts at once, one per string,
-// and a readonly may name several parameters. Parameters are named as
-// written, or by position; `this` names the object of a member function.
-// Positions count as tessera_op argument lists do, `this` first, so each fact
-// becomes one annotation such as "tessera_guarantees=SPD:arg2", a preserves
-// becomes "tessera_preserves=SPD:0,1", and a readonly "tessera_readonly=arg0",
-// which lift-tessera-annotations can line up with argModes.
+// The tessera attributes. Each passes the strings it is given on as written,
+// as one annotation, "tessera_guarantees=SPD(M)" or
+// "tessera_preserves=SPD,A,B", and lift-tessera-annotations, which every
+// frontend shares, reads them: see there for what they say. What the plugin
+// adds is only what Clang alone knows -- the names of the parameters, the
+// types behind them, and the variables in scope at a statement.
 //
 // Only the GNU spelling __attribute__((tessera_guarantees(...))) and the
 // unscoped [[tessera_guarantees(...)]] keep their arguments; the scoped
 // [[tessera::guarantees(...)]] reaches the plugin with none, and is ignored
 // with a warning.
-enum class TesseraPropertyKind { Guarantees, Assumes, Preserves, Readonly };
+enum TesseraAttrKind {
+  TesseraOp,
+  PureTesseraOp,
+  TesseraGuarantees,
+  TesseraAssumes,
+  TesseraPreserves,
+  TesseraReadonly
+};
 
-// A property name: letters, digits and underscores.
-static bool isTesseraPropertyName(StringRef name) {
-  return !name.empty() && llvm::all_of(name, [](char c) {
-    return llvm::isAlnum(c) || c == '_';
-  });
-}
+// Each one's GNU spelling, which also names its annotation, and its scoped
+// C++ spelling.
+static constexpr const char *TesseraAttrSpellings[][2] = {
+    {"tessera_op", "tessera::op"},
+    {"pure_tessera_op", "tessera::pure_op"},
+    {"tessera_guarantees", "tessera::guarantees"},
+    {"tessera_assumes", "tessera::assumes"},
+    {"tessera_preserves", "tessera::preserves"},
+    {"tessera_readonly", "tessera::readonly"}};
 
-// Split a fact written "SPD(M)" into the property and the parameter. A bare
-// "SPD" has no parameter. Returns false if the text is neither form.
-static bool parseTesseraFact(StringRef text, StringRef &property,
-                             StringRef &param) {
-  text = text.trim();
-  size_t open = text.find('(');
-  if (open == StringRef::npos) {
-    property = text;
-    param = "";
-    return isTesseraPropertyName(property);
-  }
-  if (text.back() != ')')
-    return false;
-  property = text.take_front(open).trim();
-  param = text.drop_front(open + 1).drop_back().trim();
-  return isTesseraPropertyName(property) && !param.empty() &&
-         !param.contains('(') && !param.contains(')') && !param.contains(',');
-}
-
-// The tessera_op argument position a parameter name refers to.
-static std::optional<unsigned> getTesseraArgPosition(FunctionDecl *FD,
-                                                     StringRef name) {
-  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-  bool hasImplicitThis = MD && MD->isInstance();
-  unsigned numArgs = FD->getNumParams() + (hasImplicitThis ? 1 : 0);
-  if (name == "this")
-    return hasImplicitThis ? std::optional<unsigned>(0) : std::nullopt;
-  unsigned position;
-  if (!name.getAsInteger(10, position))
-    return position < numArgs ? std::optional<unsigned>(position)
-                              : std::nullopt;
-  for (auto [i, param] : llvm::enumerate(FD->parameters()))
-    if (param->getName() == name)
-      return i + (hasImplicitThis ? 1 : 0);
-  return std::nullopt;
-}
-
-static ParsedAttrInfo::AttrHandling
-handleTesseraPropertyAttribute(Sema &S, Decl *D, const ParsedAttr &Attr,
-                               TesseraPropertyKind kind) {
-  bool isGuarantee = kind == TesseraPropertyKind::Guarantees;
-  StringRef attrName =
-      isGuarantee                              ? "tessera::guarantees"
-      : kind == TesseraPropertyKind::Assumes   ? "tessera::assumes"
-      : kind == TesseraPropertyKind::Preserves ? "tessera::preserves"
-                                               : "tessera::readonly";
-  // A malformed annotation is a mistake in what is known, not in the program,
-  // so it only costs the facts it would have given: warn, and leave it out.
-  auto warn = [&](const Twine &message) {
+// The strings a tessera attribute is given, joined with ','. A malformed
+// tessera attribute only costs what it would have given, so it is reported as
+// a warning and left out, and the code compiles as though it were not there.
+static std::optional<std::string>
+getTesseraStrings(Sema &S, const ParsedAttr &Attr, StringRef attrName) {
+  auto warn = [&](StringRef message) {
     unsigned ID = S.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Warning,
-                                                     "%0; it is ignored");
-    S.Diag(Attr.getLoc(), ID) << message.str();
+                                                     "'%0' %1; it is ignored");
+    S.Diag(Attr.getLoc(), ID) << attrName << message;
   };
-
-  if (Attr.getNumArgs() < (kind == TesseraPropertyKind::Preserves ? 2u : 1u)) {
-    warn(isGuarantee ? "'tessera::guarantees' takes one or more facts such as "
-                       "\"SPD\" or \"SPD(M)\""
-         : kind == TesseraPropertyKind::Assumes
-             ? "'tessera::assumes' takes one or more facts such as \"SPD(M)\""
-         : kind == TesseraPropertyKind::Preserves
-             ? "'tessera::preserves' takes a property name and the "
-               "parameters it is preserved from"
-             : "'tessera::readonly' takes the pointer parameters the function "
-               "does not change the objects of");
-    return ParsedAttrInfo::AttributeNotApplied;
+  if (Attr.getNumArgs() == 0) {
+    warn("takes one or more strings");
+    return std::nullopt;
   }
-
-  SmallVector<std::string> args;
+  std::string strings;
   for (unsigned i = 0, e = Attr.getNumArgs(); i != e; ++i) {
-    auto *Literal =
-        dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts());
-    if (!Literal) {
-      warn("arguments to '" + attrName + "' must be string literals");
-      return ParsedAttrInfo::AttributeNotApplied;
+    auto *literal =
+        Attr.isArgExpr(i)
+            ? dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts())
+            : nullptr;
+    if (!literal) {
+      warn("takes string literals");
+      return std::nullopt;
     }
-    args.push_back(Literal->getString().str());
+    if (i)
+      strings += ",";
+    strings += literal->getString();
   }
-
-  auto *FD = cast<FunctionDecl>(D);
-  SmallVector<std::string> annotations;
-  if (kind == TesseraPropertyKind::Preserves) {
-    // A preserves is used whole or not at all: leaving out an input it could
-    // not name would claim the property survives with fewer inputs having it.
-    StringRef property = args[0];
-    if (!isTesseraPropertyName(property)) {
-      warn("'" + property + "' is not a valid property name for '" + attrName +
-           "'; use letters, digits and underscores");
-      return ParsedAttrInfo::AttributeNotApplied;
-    }
-    std::string annotation = ("tessera_preserves=" + property + ":").str();
-    for (unsigned i = 1; i < args.size(); ++i) {
-      auto pos = getTesseraArgPosition(FD, args[i]);
-      if (!pos) {
-        warn("'tessera::preserves' names '" + args[i] +
-             "', which is not a parameter of '" + FD->getNameAsString() + "'");
-        return ParsedAttrInfo::AttributeNotApplied;
-      }
-      annotation += (i == 1 ? "" : ",") + std::to_string(*pos);
-    }
-    annotations.push_back(std::move(annotation));
-  }
-
-  // Each parameter a readonly names stands on its own too: one it cannot
-  // name is left out, which only means calls are taken to change that object.
-  if (kind == TesseraPropertyKind::Readonly) {
-    const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-    unsigned thisOffset = MD && MD->isInstance() ? 1 : 0;
-    for (StringRef param : args) {
-      param = param.trim();
-      auto pos = getTesseraArgPosition(FD, param);
-      if (!pos) {
-        warn("'tessera::readonly' names '" + param +
-             "', which is not a parameter of '" + FD->getNameAsString() + "'");
-        continue;
-      }
-      if (param != "this" && *pos >= thisOffset) {
-        QualType type = FD->getParamDecl(*pos - thisOffset)->getType();
-        if (!type->isPointerType() && !type->isReferenceType()) {
-          warn("'tessera::readonly' names '" + param +
-               "', which is not a pointer or reference, so there is no "
-               "object to leave alone");
-          continue;
-        }
-      }
-      annotations.push_back(("tessera_readonly=arg" + Twine(*pos)).str());
-    }
-  }
-
-  // Each argument of a guarantee or assumption is one fact, and stands on its
-  // own, so a malformed one is left out and the rest are kept.
-  for (StringRef text : args) {
-    if (kind == TesseraPropertyKind::Preserves ||
-        kind == TesseraPropertyKind::Readonly)
-      break;
-    StringRef property, param;
-    if (!parseTesseraFact(text, property, param)) {
-      warn("'" + text + "' is not a fact '" + attrName +
-           "' understands; write a property name and the parameter it applies "
-           "to, such as \"SPD(M)\"" +
-           (isGuarantee ? ", or a bare \"SPD\" for the return value" : ""));
-      continue;
-    }
-
-    if (isGuarantee && param == "return")
-      param = "";
-    if (param.empty()) {
-      if (!isGuarantee) {
-        warn("'tessera::assumes' needs the parameter each fact applies to; "
-             "write \"" +
-             property + "(M)\"");
-        continue;
-      }
-      // The old form gave the parameter as a separate string, which would
-      // now read as a second property of the return value.
-      if (getTesseraArgPosition(FD, property)) {
-        warn("'" + property + "' names a parameter of '" +
-             FD->getNameAsString() +
-             "', not a property; state a property of it as \"SPD(" + property +
-             ")\"");
-        continue;
-      }
-      if (FD->getReturnType()->isVoidType()) {
-        warn("'tessera::guarantees' on a function returning void must name "
-             "the parameter each fact applies to; write \"" +
-             property + "(M)\"");
-        continue;
-      }
-      annotations.push_back(
-          ("tessera_guarantees=" + property + ":return").str());
-      continue;
-    }
-
-    auto pos = getTesseraArgPosition(FD, param);
-    if (!pos) {
-      warn("'" + attrName + "' names '" + param +
-           "', which is not a parameter of '" + FD->getNameAsString() + "'");
-      continue;
-    }
-    if (isGuarantee) {
-      // Only something the function writes through can come out of it with
-      // a property it did not have going in.
-      const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-      unsigned paramIdx = *pos - (MD && MD->isInstance() ? 1 : 0);
-      if (param != "this" && paramIdx < FD->getNumParams()) {
-        QualType type = FD->getParamDecl(paramIdx)->getType();
-        if (!type->isPointerType() && !type->isReferenceType()) {
-          warn("'tessera::guarantees' names '" + param +
-               "', which is passed by value, so the function cannot give it a "
-               "property");
-          continue;
-        }
-      }
-    }
-    annotations.push_back(
-        ((isGuarantee ? "tessera_guarantees=" : "tessera_assumes=") + property +
-         ":arg" + Twine(*pos))
-            .str());
-  }
-  if (annotations.empty())
-    return ParsedAttrInfo::AttributeNotApplied;
-
-  auto &AST = S.getASTContext();
-  for (const std::string &annotation : annotations)
-    D->addAttr(
-        AnnotateAttr::Create(AST, annotation, nullptr, 0, Attr.getRange()));
-  // A property is read off the call that produced a value, or off the
-  // parameters of the function that assumes it, and a handle's off the calls
-  // given it, so that call, or that function's own body, has to survive until
-  // tessera-apply-pdl runs; the pipeline inlines long before then.
-  if (!D->hasAttr<AlwaysInlineAttr>() && !D->hasAttr<NoInlineAttr>())
-    D->addAttr(NoInlineAttr::CreateImplicit(AST));
-  return ParsedAttrInfo::AttributeApplied;
+  return strings;
 }
 
-// A guarantee on a statement states a fact that holds once the statement has
-// run, about the object a variable in scope points to. It is for a handle
-// built in place, as a PETSc Mat assembled in the body of main is, where
-// there is no function to put the guarantee on:
-//
-//   PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
-//   __attribute__((tessera_guarantees("SPD(A)")));
-//
-// The fact becomes a call, right after the statement, to a marker generated
-// for it, whose parameter carries the guarantee:
-//
-//   __tessera_fact_0(&A);  // void __tessera_fact_0(Mat *) {}, annotated
-//                          // tessera_guarantees=SPD:arg0 and tessera_fact
-//
-// The passes read it as establishing the fact of whatever handle the variable
-// holds there, and tessera-to-llvm removes the calls and the marker once they
-// are done. The marker is given the variable's address rather than its value
-// because the fact is of the variable at that point: a loaded value is not
-// always recognizably the variable's, as where LLVM merges the handles two
-// branches may have left in it. The marker is a weak definition with an empty
-// body: LLVM cannot see
-// through a weak definition, so it leaves the call alone until then, and a
-// program built without the passes still links, the call doing nothing.
-//
-// The call can only be spliced in once the statement is in its parent, so it
-// is built here, while the variable can still be looked up, and placed when
-// the function reaches the consumer (spliceTesseraFacts).
-static ParsedAttrInfo::AttrHandling
-handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr, 
-                                    TesseraPropertyKind kind) {
-  auto warn = [&](const Twine &message) {
-    unsigned ID = S.getDiagnostics().getCustomDiagID(DiagnosticsEngine::Warning,
-                                                     "%0; it is ignored");
-    S.Diag(Attr.getLoc(), ID) << message.str();
-  };
+// The names of a function's argument positions, joined with ',', as
+// lift-tessera-annotations counts them: `this` first for a member function.
+// An unnamed parameter has an empty name.
+static std::string getTesseraParamNames(const FunctionDecl *FD) {
+  SmallVector<StringRef> names;
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  if (MD && MD->isInstance())
+    names.push_back("this");
+  for (const ParmVarDecl *param : FD->parameters())
+    names.push_back(param->getName());
+  return llvm::join(names, ",");
+}
 
-  if (Attr.getNumArgs() < 1) {
-    warn("'tessera::guarantees' or 'tessera::assumes' on a statement takes one or more "
-         "facts such as \"SPD(A)\"");
-    return ParsedAttrInfo::AttributeNotApplied;
+// For each argument position of a tessera op, `this` first, a global whose
+// type is that of the value the argument could be lifted as -- what a pointer
+// or reference points to, or a struct passed by value itself -- since an
+// opaque pointer does not say. Returns the globals' symbols, joined with ',',
+// with nothing for a position that has none. Each is emitted at the end of the
+// translation unit if its type is complete by then, which a class's own is not
+// while one of its members is being declared (emitTesseraArgTypeCarriers).
+static std::string makeTesseraArgTypeCarriers(Sema &S, FunctionDecl *FD) {
+  auto &AST = S.getASTContext();
+  SmallVector<QualType> types;
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  if (MD && MD->isInstance())
+    types.push_back(MD->getThisType()->getPointeeType());
+  for (ParmVarDecl *param : FD->parameters()) {
+    QualType type = param->getType();
+    if (type->isPointerType() || type->isReferenceType())
+      type = type->getPointeeType();
+    else if (!type->isRecordType())
+      type = QualType();
+    types.push_back(type);
   }
+
+  SmallVector<std::string> symbols;
+  for (QualType type : types) {
+    symbols.emplace_back();
+    if (type.isNull() || type->isDependentType())
+      continue;
+    auto loc = FD->getLocation();
+    auto &Id = AST.Idents.get("__tessera_arg_type_" +
+                              std::to_string(TesseraArgTypeCarriers.size()));
+    auto *VD = VarDecl::Create(AST, AST.getTranslationUnitDecl(), loc, loc, &Id,
+                               type.getUnqualifiedType(), nullptr, SC_Static);
+    VD->setImplicit(true);
+    TesseraArgTypeCarriers.push_back(VD);
+    symbols.back() = ASTNameGenerator(AST).getName(VD);
+  }
+  return llvm::join(symbols, ",");
+}
+
+// Handle facts added as annotations to a statement. The fact corresponds to
+// the variable object or the object a variable in scope points to.
+static ParsedAttrInfo::AttrHandling
+handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr,
+                           StringRef attrName) {
+  std::optional<std::string> strings = getTesseraStrings(S, Attr, attrName);
+  if (!strings)
+    return ParsedAttrInfo::AttributeNotApplied;
   if (S.CurContext->isDependentContext()) {
-    warn("a fact stated on a statement in a template is not supported");
+    unsigned ID = S.getDiagnostics().getCustomDiagID(
+        DiagnosticsEngine::Warning, "a fact stated on a statement in a "
+                                    "template is not supported; it is ignored");
+    S.Diag(Attr.getLoc(), ID);
     return ParsedAttrInfo::AttributeNotApplied;
   }
 
   auto &AST = S.getASTContext();
   SourceLocation loc = Attr.getLoc();
-  // The marker's parameters, one per variable the facts name, in order.
   SmallVector<VarDecl *> vars;
-  SmallVector<std::string> annotations;
-  for (unsigned i = 0, e = Attr.getNumArgs(); i != e; ++i) {
-    auto *Literal =
-        dyn_cast<StringLiteral>(Attr.getArgAsExpr(i)->IgnoreParenCasts());
-    if (!Literal) {
-      warn("arguments to 'tessera::guarantees' or 'tessera::assumes' must be string literals");
-      return ParsedAttrInfo::AttributeNotApplied;
-    }
-    StringRef text = Literal->getString(), property, name;
-    if (!parseTesseraFact(text, property, name)) {
-      warn("'" + text +
-           "' is not a fact 'tessera::guarantees' or 'tessera::assumes' understands; write a "
-           "property name and the variable it applies to, such as \"SPD(A)\"");
-      continue;
-    }
-    if (name.empty()) {
-      warn("'" + text +
-           "' does not say what it is true of; a fact stated on a statement "
-           "names a variable, as \"SPD(A)\" does");
-      continue;
-    }
-
-    LookupResult R(S, DeclarationName(&AST.Idents.get(name)), loc,
+  for (StringRef identifier : findNonCallIdentifiers(*strings)) {
+    LookupResult R(S, DeclarationName(&AST.Idents.get(identifier)), loc,
                    Sema::LookupOrdinaryName);
+    R.suppressDiagnostics();
     S.LookupName(R, S.getCurScope());
     auto *VD = R.getAsSingle<VarDecl>();
-    if (!VD) {
-      warn("'" + name + "' is not a variable in scope here");
+    if (!VD || llvm::is_contained(vars, VD))
       continue;
-    }
     QualType varType = VD->getType().getNonReferenceType();
-    if (!varType->isPointerType() && !varType->isRecordType()) {
-      warn("'" + name +
-           "' is neither a pointer nor an object; a fact stated on a "
-           "statement is about an object, or the object a handle points to");
-      continue;
-    }
-    auto *it = llvm::find(vars, VD);
-    unsigned position = it - vars.begin();
-    if (it == vars.end())
+    if (varType->isPointerType() || varType->isRecordType())
       vars.push_back(VD);
-    if (kind == TesseraPropertyKind::Guarantees) {
-      annotations.push_back(
-        ("tessera_guarantees=" + property + ":arg" + Twine(position)).str());
-    } else if (kind == TesseraPropertyKind::Assumes) {
-      annotations.push_back(
-        ("tessera_assumes=" + property + ":arg" + Twine(position)).str());
-    }
   }
-  if (annotations.empty())
-    return ParsedAttrInfo::AttributeNotApplied;
 
-  // void __tessera_fact_N(T0 *, T1 *, ...) {}
+  // void __tessera_fact_N(T0 *A, T1 *B, ...) {}
   SmallVector<QualType> paramTypes;
-  for (VarDecl *VD : vars)
+  SmallVector<StringRef> paramNames;
+  for (VarDecl *VD : vars) {
     paramTypes.push_back(
         AST.getPointerType(VD->getType().getNonReferenceType()));
+    paramNames.push_back(VD->getName());
+  }
   QualType fnType = AST.getFunctionType(AST.VoidTy, paramTypes,
                                         FunctionProtoType::ExtProtoInfo());
   auto &Id = AST.Idents.get("__tessera_fact_" +
                             std::to_string(TesseraFactSites.size()));
-  FunctionDecl *Marker = FunctionDecl::Create(
+  FunctionDecl *marker = FunctionDecl::Create(
       AST, AST.getTranslationUnitDecl(), loc, loc, DeclarationName(&Id), fnType,
       AST.getTrivialTypeSourceInfo(fnType, loc), SC_None);
-  Marker->setImplicit(true);
+  marker->setImplicit(true);
   SmallVector<ParmVarDecl *> params;
-  for (QualType type : paramTypes)
+  for (auto [type, VD] : llvm::zip(paramTypes, vars))
     params.push_back(ParmVarDecl::Create(
-        AST, Marker, loc, loc, nullptr, type,
+        AST, marker, loc, loc, VD->getIdentifier(), type,
         AST.getTrivialTypeSourceInfo(type, loc), SC_None, nullptr));
-  Marker->setParams(params);
-  Marker->setBody(CompoundStmt::Create(AST, {}, FPOptionsOverride(), loc, loc));
-  Marker->addAttr(WeakAttr::CreateImplicit(AST));
-  Marker->addAttr(NoInlineAttr::CreateImplicit(AST));
-  for (const std::string &annotation : annotations)
-    Marker->addAttr(AnnotateAttr::CreateImplicit(AST, annotation, nullptr, 0));
-  Marker->addAttr(
-      AnnotateAttr::CreateImplicit(AST, "tessera_fact", nullptr, 0));
+  marker->setParams(params);
+  marker->setBody(CompoundStmt::Create(AST, {}, FPOptionsOverride(), loc, loc));
+  marker->addAttr(WeakAttr::CreateImplicit(AST));
+  marker->addAttr(NoInlineAttr::CreateImplicit(AST));
+  for (const std::string &annotation :
+       {(attrName + "=" + *strings).str(),
+        "tessera_params=" + llvm::join(paramNames, ","),
+        std::string("tessera_fact")})
+    marker->addAttr(AnnotateAttr::CreateImplicit(AST, annotation, nullptr, 0));
 
   // __tessera_fact_N(&A, ...);
   SmallVector<Expr *> args;
@@ -1660,66 +1160,34 @@ handleTesseraFactStatement(Sema &S, Stmt *St, const ParsedAttr &Attr,
       return ParsedAttrInfo::AttributeNotApplied;
     args.push_back(arg.get());
   }
-  auto *callee = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, Marker,
-                                     false, loc, fnType, VK_LValue, Marker);
+  auto *callee = DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, marker,
+                                     false, loc, fnType, VK_LValue, marker);
   Expr *calleePtr = ImplicitCastExpr::Create(
       AST, AST.getPointerType(fnType), CK_FunctionToPointerDecay, callee,
       nullptr, VK_PRValue, FPOptionsOverride());
   Expr *call = CallExpr::Create(AST, calleePtr, args, AST.VoidTy, VK_PRValue,
                                 loc, FPOptionsOverride());
 
-  TesseraFactSites.push_back({St, call, Marker});
+  TesseraFactSites.push_back({St, call, marker});
   return ParsedAttrInfo::AttributeApplied;
 }
 
-template <TesseraPropertyKind Kind>
-struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
-  TesseraPropertyAttrInfo() {
+template <TesseraAttrKind Kind> struct TesseraAttrInfo : public ParsedAttrInfo {
+  static constexpr const char *attrName = TesseraAttrSpellings[Kind][0];
+  static constexpr bool isOp = Kind == TesseraOp || Kind == PureTesseraOp;
+
+  TesseraAttrInfo() {
     OptArgs = 15;
-    static constexpr Spelling GuaranteesSpellings[] = {
-        {ParsedAttr::AS_GNU, "tessera_guarantees"},
+    static constexpr Spelling S[] = {
+        {ParsedAttr::AS_GNU, attrName},
 #if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "tessera_guarantees"},
+        {ParsedAttr::AS_C23, attrName},
 #else
-        {ParsedAttr::AS_C2x, "tessera_guarantees"},
+        {ParsedAttr::AS_C2x, attrName},
 #endif
-        {ParsedAttr::AS_CXX11, "tessera_guarantees"},
-        {ParsedAttr::AS_CXX11, "tessera::guarantees"}};
-    static constexpr Spelling AssumesSpellings[] = {
-        {ParsedAttr::AS_GNU, "tessera_assumes"},
-#if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "tessera_assumes"},
-#else
-        {ParsedAttr::AS_C2x, "tessera_assumes"},
-#endif
-        {ParsedAttr::AS_CXX11, "tessera_assumes"},
-        {ParsedAttr::AS_CXX11, "tessera::assumes"}};
-    static constexpr Spelling PreservesSpellings[] = {
-        {ParsedAttr::AS_GNU, "tessera_preserves"},
-#if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "tessera_preserves"},
-#else
-        {ParsedAttr::AS_C2x, "tessera_preserves"},
-#endif
-        {ParsedAttr::AS_CXX11, "tessera_preserves"},
-        {ParsedAttr::AS_CXX11, "tessera::preserves"}};
-    static constexpr Spelling ReadonlySpellings[] = {
-        {ParsedAttr::AS_GNU, "tessera_readonly"},
-#if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "tessera_readonly"},
-#else
-        {ParsedAttr::AS_C2x, "tessera_readonly"},
-#endif
-        {ParsedAttr::AS_CXX11, "tessera_readonly"},
-        {ParsedAttr::AS_CXX11, "tessera::readonly"}};
-    if constexpr (Kind == TesseraPropertyKind::Guarantees)
-      Spellings = GuaranteesSpellings;
-    else if constexpr (Kind == TesseraPropertyKind::Assumes)
-      Spellings = AssumesSpellings;
-    else if constexpr (Kind == TesseraPropertyKind::Preserves)
-      Spellings = PreservesSpellings;
-    else
-      Spellings = ReadonlySpellings;
+        {ParsedAttr::AS_CXX11, attrName},
+        {ParsedAttr::AS_CXX11, TesseraAttrSpellings[Kind][1]}};
+    Spellings = S;
   }
 
   bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
@@ -1735,30 +1203,58 @@ struct TesseraPropertyAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleDeclAttribute(Sema &S, Decl *D,
                                    const ParsedAttr &Attr) const override {
-    return handleTesseraPropertyAttribute(S, D, Attr, Kind);
+    std::optional<std::string> strings = getTesseraStrings(S, Attr, attrName);
+    if (!strings)
+      return AttributeNotApplied;
+    auto *FD = cast<FunctionDecl>(D);
+    auto &AST = S.getASTContext();
+    FD->addAttr(AnnotateAttr::Create(AST,
+                                     (Twine(attrName) + "=" + *strings).str(),
+                                     nullptr, 0, Attr.getRange()));
+    FD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, "tessera_params=" + getTesseraParamNames(FD), nullptr, 0));
+    if (isOp) {
+      // A rule's right-hand side can call the op whether or not anything
+      // here does, so the function has to be in the module, along with the
+      // types its arguments may be lifted as.
+      FD->addAttr(AnnotateAttr::CreateImplicit(
+          AST, "tessera_arg_types=" + makeTesseraArgTypeCarriers(S, FD),
+          nullptr, 0));
+      FD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+      TesseraOpFunctions.push_back(FD);
+    } else if (!FD->hasAttr<AlwaysInlineAttr>() &&
+               !FD->hasAttr<NoInlineAttr>()) {
+      // A property is read off the call that produced a value, or off the
+      // parameters of the function that assumes it, and a handle's off the
+      // calls given it, so that call, or that function's own body, has to
+      // survive until tessera-apply-pdl runs. LLVM inlines long before the
+      // module reaches Tessera.
+      FD->addAttr(NoInlineAttr::CreateImplicit(AST));
+    }
+    return AttributeApplied;
   }
 
-  // Only a guarantee can be stated on a statement; clang reports the others
-  // as not applying to one.
+  // Only a guarantee or an assumption can be stated on a statement; clang
+  // reports the others as not applying to one.
   AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
                                    class Attr *&Result) const override {
-    if constexpr ((Kind == TesseraPropertyKind::Guarantees) || (Kind == TesseraPropertyKind::Assumes))
-      return handleTesseraFactStatement(S, St, Attr, Kind);
+    if constexpr (Kind == TesseraGuarantees || Kind == TesseraAssumes)
+      return handleTesseraFactStatement(S, St, Attr, attrName);
     return NotHandled;
   }
 };
 
-static ParsedAttrInfoRegistry::Add<
-    TesseraPropertyAttrInfo<TesseraPropertyKind::Guarantees>>
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraOp>> T1("tessera_op",
+                                                                  "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<PureTesseraOp>>
+    T2("pure_tessera_op", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraGuarantees>>
     T3("tessera_guarantees", "");
-static ParsedAttrInfoRegistry::Add<
-    TesseraPropertyAttrInfo<TesseraPropertyKind::Preserves>>
-    T4("tessera_preserves", "");
-static ParsedAttrInfoRegistry::Add<
-    TesseraPropertyAttrInfo<TesseraPropertyKind::Assumes>>
-    T5("tessera_assumes", "");
-static ParsedAttrInfoRegistry::Add<
-    TesseraPropertyAttrInfo<TesseraPropertyKind::Readonly>>
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraAssumes>>
+    T4("tessera_assumes", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraPreserves>>
+    T5("tessera_preserves", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraReadonly>>
     T6("tessera_readonly", "");
 
 struct PerfifyOpAttrInfo : public ParsedAttrInfo {
@@ -2190,8 +1686,8 @@ public:
       return;
     }
 
-    std::string OptimizationRule;
-    if (!PP.FinishLexStringLiteral(Tok, OptimizationRule, "pragma optimize",
+    std::string optimizationRule;
+    if (!PP.FinishLexStringLiteral(Tok, optimizationRule, "pragma optimize",
                                    /*AllowMacroExpansion=*/false))
       return;
     if (Tok.isNot(tok::eod)) {
@@ -2199,7 +1695,7 @@ public:
           << "pragma optimize warning";
       return;
     }
-    GlobalOptimizationRules.push_back(OptimizationRule);
+    GlobalOptimizationRules.push_back(optimizationRule);
   }
 };
 
@@ -2208,3 +1704,4 @@ static PragmaHandlerRegistry::Add<PragmaTesseraOptimizeHandler>
 } // namespace
 
 #endif
+// timing
