@@ -896,6 +896,87 @@ struct PerfifyOpAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<PerfifyOpAttrInfo>
     PerfifyOpX("perfify_op", "");
 
+// Constrains a loop's trip count, e.g. [[perfify_loop("le N")]] while (...).
+// Lowered to a call, first in the body, to an empty marker annotated
+// "perfify_loop=<constraint>"; weak so LLVM keeps the call.
+struct PerfifyLoopAttrInfo : public ParsedAttrInfo {
+  PerfifyLoopAttrInfo() {
+    OptArgs = 1;
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "perfify_loop"},
+#if LLVM_VERSION_MAJOR > 17
+                                     {ParsedAttr::AS_C23, "perfify_loop"},
+#else
+                                     {ParsedAttr::AS_C2x, "perfify_loop"},
+#endif
+                                     {ParsedAttr::AS_CXX11, "perfify_loop"}};
+    Spellings = S;
+  }
+
+  bool diagAppertainsToStmt(Sema &S, const ParsedAttr &Attr,
+                            const Stmt *St) const override {
+    if (!isa<ForStmt, WhileStmt, DoStmt>(St)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "loops";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
+                                   class Attr *&Result) const override {
+    StringLiteral *Literal =
+        Attr.getNumArgs() == 1
+            ? dyn_cast<StringLiteral>(Attr.getArgAsExpr(0)->IgnoreParenCasts())
+            : nullptr;
+    if (!Literal) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'perfify_loop' attribute requires a single string literal argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    auto &AST = S.getASTContext();
+    SourceLocation loc = Attr.getLoc();
+    static unsigned counter = 0;
+    auto &Id = AST.Idents.get("__perfify_loop_" + std::to_string(counter++));
+    QualType fnType =
+        AST.getFunctionType(AST.VoidTy, {}, FunctionProtoType::ExtProtoInfo());
+    FunctionDecl *Marker = FunctionDecl::Create(
+        AST, AST.getTranslationUnitDecl(), loc, loc, DeclarationName(&Id),
+        fnType, AST.getTrivialTypeSourceInfo(fnType, loc), SC_None);
+    Marker->setImplicit(true);
+    Marker->setBody(CompoundStmt::Create(AST, {}, {}, loc, loc));
+    Marker->addAttr(WeakAttr::CreateImplicit(AST));
+    Marker->addAttr(NoInlineAttr::CreateImplicit(AST));
+    Marker->addAttr(AnnotateAttr::CreateImplicit(
+        AST, ("perfify_loop=" + Literal->getString()).str(), nullptr, 0));
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(Marker));
+
+    auto *Callee =
+        DeclRefExpr::Create(AST, NestedNameSpecifierLoc(), loc, Marker, false,
+                            loc, fnType, VK_LValue, Marker);
+    Expr *CalleePtr = ImplicitCastExpr::Create(
+        AST, AST.getPointerType(fnType), CK_FunctionToPointerDecay, Callee,
+        nullptr, VK_PRValue, FPOptionsOverride());
+    Expr *Call = CallExpr::Create(AST, CalleePtr, {}, AST.VoidTy, VK_PRValue,
+                                  loc, FPOptionsOverride());
+    auto prepend = [&](Stmt *Body) {
+      return CompoundStmt::Create(AST, {Call, Body}, {}, loc, loc);
+    };
+    if (auto *For = dyn_cast<ForStmt>(St))
+      For->setBody(prepend(For->getBody()));
+    else if (auto *While = dyn_cast<WhileStmt>(St))
+      While->setBody(prepend(While->getBody()));
+    else
+      cast<DoStmt>(St)->setBody(prepend(cast<DoStmt>(St)->getBody()));
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<PerfifyLoopAttrInfo>
+    PerfifyLoopX("perfify_loop", "");
+
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
     OptArgs = 1;
