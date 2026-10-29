@@ -50,7 +50,6 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/MapVector.h"
 #include <optional>
-#include <type_traits>
 #if LLVM_VERSION_MAJOR <= 16
 #include "llvm/ADT/Optional.h"
 #endif
@@ -146,23 +145,6 @@ using namespace llvm;
 #undef DEBUG_TYPE
 #endif
 #define DEBUG_TYPE "lower-reactant-intrinsic"
-
-// LLVM renamed BasicBlock::getFirstNonPHIOrDbgOrAlloca to
-// getFirstNonPHIOrAlloca (llvm/llvm-project#232604) within one major
-// version, so the member's presence rather than LLVM_VERSION_MAJOR decides.
-template <typename T, typename = void>
-struct HasFirstNonPHIOrDbgOrAlloca : std::false_type {};
-template <typename T>
-struct HasFirstNonPHIOrDbgOrAlloca<
-    T, std::void_t<decltype(std::declval<T &>().getFirstNonPHIOrDbgOrAlloca())>>
-    : std::true_type {};
-
-template <typename T> static auto firstNonPHIOrDbgOrAlloca(T &BB) {
-  if constexpr (HasFirstNonPHIOrDbgOrAlloca<T>::value)
-    return BB.getFirstNonPHIOrDbgOrAlloca();
-  else
-    return BB.getFirstNonPHIOrAlloca();
-}
 
 llvm::cl::opt<std::string>
     Passes("raising-plugin-path", cl::init(""), cl::Hidden,
@@ -549,7 +531,7 @@ void fixup(Module &M) {
     for (CallBase *CI : gatherCallers(PushConfigFunc)) {
       Function *TheFunc = CI->getFunction();
       IRBuilder<> IRB(&TheFunc->getEntryBlock(),
-                      firstNonPHIOrDbgOrAlloca(TheFunc->getEntryBlock()));
+                      TheFunc->getEntryBlock().getFirstNonPHIOrAlloca());
       auto Allocas = FuncAllocas.lookup(TheFunc);
       if (Allocas.empty()) {
         Allocas.push_back(
