@@ -531,7 +531,7 @@ void fixup(Module &M) {
     for (CallBase *CI : gatherCallers(PushConfigFunc)) {
       Function *TheFunc = CI->getFunction();
       IRBuilder<> IRB(&TheFunc->getEntryBlock(),
-                      TheFunc->getEntryBlock().getFirstNonPHIOrDbgOrAlloca());
+                      TheFunc->getEntryBlock().getFirstNonPHIOrAlloca());
       auto Allocas = FuncAllocas.lookup(TheFunc);
       if (Allocas.empty()) {
         Allocas.push_back(

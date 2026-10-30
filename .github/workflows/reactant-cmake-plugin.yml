@@ -57,13 +57,6 @@ jobs:
       with:
         path: 'Reactant'
 
-    - name: Check out LLVM
-      uses: actions/checkout@v7
-      with:
-        repository: 'llvm/llvm-project'
-        ref: 'b08e005995ed29a2f89aa9a3f599a9d45db65523'
-        path: 'llvm-project'
-
     # Build the Enzyme-JAX this checkout pins (enzyme/workspace.bzl), not
     # whatever Enzyme-JAX main is at the moment: the bazel jobs build the
     # pinned commit, and an unrelated breakage on main should not fail this one.
@@ -81,6 +74,30 @@ jobs:
         repository: 'EnzymeAD/Enzyme-JAX'
         ref: ${{ steps.enzymexla.outputs.commit }}
         path: 'Enzyme-JAX'
+
+    # Build against the LLVM the bazel jobs build against: the one XLA pins
+    # at the XLA commit JAX pins at the JAX commit Enzyme-JAX pins.
+    - name: Read the LLVM commit Enzyme-JAX builds against
+      id: llvm
+      shell: bash
+      run: |
+        jax=$(sed -nE 's/^JAX_COMMIT = "([0-9a-f]+)".*/\1/p' Enzyme-JAX/workspace.bzl)
+        test -n "$jax"
+        xla=$(curl -fsSL "https://raw.githubusercontent.com/jax-ml/jax/${jax}/MODULE.bazel" \
+              | awk '/module_name = "xla"/ {found = 1} found && /strip_prefix = "xla-/ {sub(/.*strip_prefix = "xla-/, ""); sub(/".*/, ""); print; exit}')
+        test -n "$xla"
+        llvm=$(curl -fsSL "https://raw.githubusercontent.com/openxla/xla/${xla}/third_party/llvm/workspace.bzl" \
+               | sed -nE 's/^ *LLVM_COMMIT = "([0-9a-f]+)".*/\1/p')
+        test -n "$llvm"
+        echo "JAX ${jax} -> XLA ${xla} -> LLVM ${llvm}"
+        echo "commit=$llvm" >> "$GITHUB_OUTPUT"
+
+    - name: Check out LLVM
+      uses: actions/checkout@v7
+      with:
+        repository: 'llvm/llvm-project'
+        ref: ${{ steps.llvm.outputs.commit }}
+        path: 'llvm-project'
 
     - name: Check out Enzyme GPU Tests
       uses: actions/checkout@v7
