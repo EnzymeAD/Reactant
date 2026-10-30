@@ -494,8 +494,8 @@ void fixup(Module &M) {
       Pushes[TheFunc].insert(CI);
     }
   }
-    
-    PassBuilder PB;
+
+    PassBuilder PB(M.getContext());
     LoopAnalysisManager LAM;
     FunctionAnalysisManager FAM;
     CGSCCAnalysisManager CGAM;
@@ -759,7 +759,7 @@ public:
       }
       {
 
-        PassBuilder PB;
+        PassBuilder PB(M.getContext());
         LoopAnalysisManager LAM;
         FunctionAnalysisManager FAM;
         CGSCCAnalysisManager CGAM;
@@ -965,7 +965,7 @@ public:
     }
 
     {
-      PassBuilder PB;
+      PassBuilder PB(M.getContext());
       LoopAnalysisManager LAM;
       FunctionAnalysisManager FAM;
       CGSCCAnalysisManager CGAM;
