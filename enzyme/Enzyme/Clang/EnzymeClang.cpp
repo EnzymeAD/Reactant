@@ -79,6 +79,14 @@ static const std::string &offloadBinaryToEmbedFile(const T &Opts) {
     return Opts.CudaGpuBinaryFileName;
 }
 std::vector<std::string> GlobalPerfifyCosts;
+
+struct PerfifyFuncCost {
+  std::string Name;
+  std::string Cost;
+  SourceLocation Loc;
+};
+std::vector<PerfifyFuncCost> GlobalPerfifyFuncCosts;
+
 std::vector<std::string> GlobalOptimizationRules;
 
 struct TesseraArgTypeGlobalInfo {
@@ -1072,6 +1080,38 @@ public:
     }
   }
 };
+
+class PragmaPerfifyFuncCostHandler : public PragmaHandler {
+public:
+  PragmaPerfifyFuncCostHandler() : PragmaHandler("perfify_func_cost") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    SourceLocation Loc = Introducer.Loc;
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::string_literal)) {
+      PP.Diag(Tok.getLocation(), diag::err_expected) << tok::string_literal;
+      return;
+    } else {
+      std::string Def;
+      if (!PP.FinishLexStringLiteral(Tok, Def, "pragma perfify_func_cost", false)) {
+        return;
+      } else if (Tok.isNot(tok::eod)) {
+        PP.Diag(Tok, diag::ext_pp_extra_tokens_at_eol) << "pragma perfify_func_cost";
+        return;
+      }
+      auto [Name, Cost] = StringRef(Def).split('=');
+      if (!StringRef(Def).contains('=') || Name.trim().empty() || Cost.trim().empty()) {
+        auto &D = PP.getDiagnostics();
+        D.Report(Loc, D.getCustomDiagID(DiagnosticsEngine::Error, "expected '<function> = <cost>' in " "pragma perfify_func_cost"));
+        return;
+      }
+      GlobalPerfifyFuncCosts.push_back({Name.trim().str(), Cost.trim().str(), Loc});
+    }
+  }
+};
+static PragmaHandlerRegistry::Add<PragmaPerfifyFuncCostHandler>
+    PerfifyFuncCostPragmaX("perfify_func_cost", "perfify function cost definition");
+
 static PragmaHandlerRegistry::Add<PragmaPerfifyCostHandler>
     PerfifyCostX("perfify_cost", "perfify op cost definition");
 
