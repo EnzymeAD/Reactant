@@ -896,6 +896,63 @@ struct PerfifyOpAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<PerfifyOpAttrInfo>
     PerfifyOpX("perfify_op", "");
 
+// Gives a function an assumed cost, e.g.
+// __attribute__((perfify_func_cost("10"))) void hello() { ... }.
+// Lowered to the annotation "perfify_func_cost=<cost>".
+struct PerfifyFuncCostAttrInfo : public ParsedAttrInfo {
+  PerfifyFuncCostAttrInfo() {
+    OptArgs = 1;
+    static constexpr Spelling S[] = {
+        {ParsedAttr::AS_GNU, "perfify_func_cost"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "perfify_func_cost"},
+#else
+        {ParsedAttr::AS_C2x, "perfify_func_cost"},
+#endif
+        {ParsedAttr::AS_CXX11, "perfify_func_cost"}};
+    Spellings = S;
+  }
+
+  bool diagAppertainsToDecl(Sema &S, const ParsedAttr &Attr,
+                            const Decl *D) const override {
+    // This attribute appertains to functions only.
+    if (!isa<FunctionDecl>(D)) {
+      S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type_str)
+          << Attr << "functions";
+      return false;
+    }
+    return true;
+  }
+
+  AttrHandling handleDeclAttribute(Sema &S, Decl *D,
+                                   const ParsedAttr &Attr) const override {
+    if (Attr.getNumArgs() != 1) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'perfify_func_cost' attribute requires a single string argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    StringLiteral *Literal = dyn_cast<StringLiteral>(Arg0->IgnoreParenCasts());
+    if (!Literal) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error, "argument to 'perfify_func_cost' "
+                                    "attribute must be a string literal");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    D->addAttr(AnnotateAttr::Create(
+        S.Context, ("perfify_func_cost=" + Literal->getString()).str(), nullptr,
+        0, Attr.getRange()));
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<PerfifyFuncCostAttrInfo>
+    PerfifyFuncCostX("perfify_func_cost", "");
+
 // Constrains a loop's trip count, e.g. [[perfify_loop("le N")]] while (...).
 // Lowered to a call, first in the body, to an empty marker annotated
 // "perfify_loop=<constraint>"; weak so LLVM keeps the call.
