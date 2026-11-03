@@ -28,6 +28,7 @@
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/MacroBuilder.h"
@@ -78,6 +79,14 @@ static const std::string &offloadBinaryToEmbedFile(const T &Opts) {
   else
     return Opts.CudaGpuBinaryFileName;
 }
+std::vector<std::string> GlobalPerfifyCosts;
+
+struct PerfifyFuncCost {
+  std::string Name;
+  std::string Cost;
+  SourceLocation Loc;
+};
+std::vector<PerfifyFuncCost> GlobalPerfifyFuncCosts;
 
 std::vector<std::string> GlobalOptimizationRules;
 
@@ -147,6 +156,77 @@ emitTesseraArgTypeGlobals(Sema &S,
     VD->setInit(new (AST) ImplicitValueInitExpr(info.type));
     VD->addAttr(clang::UsedAttr::CreateImplicit(AST));
     declCtx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
+// Generate a perfify_cost=<cost> associated with each #pragma perfify_cost
+static void emitPerfifyCosts(Sema &S) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc;
+  DeclContext *ctx = AST.getTranslationUnitDecl();
+  for (size_t i = 0, e = GlobalPerfifyCosts.size(); i != e; ++i) {
+    auto &Id = AST.Idents.get("__perfify_cost_" + std::to_string(i));
+    auto VD =
+        VarDecl::Create(AST, ctx, loc, loc, &Id, AST.IntTy, nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(
+        IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
+    VD->addAttr(UsedAttr::CreateImplicit(AST));
+    VD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, "perfify_cost=" + GlobalPerfifyCosts[i], nullptr, 0));
+    ctx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
+
+// get the function's original name
+static std::string resolvePerfifyFuncCost(Sema &S, const PerfifyFuncCost &FC) {
+  auto &AST = S.getASTContext();
+  auto &D = S.getDiagnostics();
+  auto Result = AST.getTranslationUnitDecl()->lookup(DeclarationName(&AST.Idents.get(FC.Name)));
+  auto fail = [&](const char *Msg) {
+    D.Report(FC.Loc, D.getCustomDiagID(DiagnosticsEngine::Error, "%0")) << std::string(Msg) + " '" + FC.Name + "'";
+    return std::string();
+  };
+  if (Result.empty()) {
+    return fail("no function named");
+  } else if (!Result.isSingleResult()) {
+    return fail("cannot assign perfify cost to an overloaded function");
+  }
+  auto *FD = dyn_cast<FunctionDecl>(Result.front());
+  if (!FD) {
+    return fail("perfify cost target is not a function:");
+  }
+  std::unique_ptr<MangleContext> MC(AST.createMangleContext());
+  if (!MC->shouldMangleDeclName(FD)) {
+    return FD->getName().str();
+  }
+  std::string Symbol;
+  llvm::raw_string_ostream OS(Symbol);
+  MC->mangleName(GlobalDecl(FD), OS);
+  return Symbol;
+}
+
+// Generate a perfify_func_cost=<cost> associated with each #pragma perfify_func_cost
+static void emitPerfifyFuncCosts(Sema &S) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc;
+  DeclContext *ctx = AST.getTranslationUnitDecl();
+  for (size_t i = 0, e = GlobalPerfifyFuncCosts.size(); i != e; ++i) {
+    std::string Symbol = resolvePerfifyFuncCost(S, GlobalPerfifyFuncCosts[i]);
+    if (Symbol.empty()) {
+      continue;
+    }
+    auto &Id = AST.Idents.get("__perfify_named_func_cost_" + std::to_string(i));
+    auto VD =
+        VarDecl::Create(AST, ctx, loc, loc, &Id, AST.IntTy, nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(
+        IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
+    VD->addAttr(UsedAttr::CreateImplicit(AST));
+    VD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, "perfify_named_func_cost=" + Symbol + " = " + GlobalPerfifyFuncCosts[i].Cost, nullptr, 0));
+    ctx->addDecl(VD);
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
   }
 }
@@ -278,6 +358,8 @@ public:
     Sema &S = CI.getSema();
     emitOptimizationRules(S, GlobalOptimizationRules);
     emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
+    emitPerfifyCosts(S);
+    emitPerfifyFuncCosts(S);
   }
 };
 
@@ -834,15 +916,14 @@ struct PerfifyOpAttrInfo : public ParsedAttrInfo {
     OptArgs = 1;
     // GNU-style __attribute__((perfify_op("..."))) and C++/C2x-style
     // [[perfify_op("...")]] supported.
-    static constexpr Spelling S[] = {
-        {ParsedAttr::AS_GNU, "perfify_op"},
+    static constexpr Spelling S[] = {{ParsedAttr::AS_GNU, "perfify_op"},
 #if LLVM_VERSION_MAJOR > 17
-        {ParsedAttr::AS_C23, "perfify_op"},
+                                     {ParsedAttr::AS_C23, "perfify_op"},
 #else
-        {ParsedAttr::AS_C2x, "perfify_op"},
+                                     {ParsedAttr::AS_C2x, "perfify_op"},
 #endif
-        {ParsedAttr::AS_CXX11, "perfify_op"},
-        {ParsedAttr::AS_CXX11, "perfify::op"}};
+                                     {ParsedAttr::AS_CXX11, "perfify_op"},
+                                     {ParsedAttr::AS_CXX11, "perfify::op"}};
     Spellings = S;
   }
 
@@ -859,8 +940,7 @@ struct PerfifyOpAttrInfo : public ParsedAttrInfo {
 
   AttrHandling handleDeclAttribute(Sema &S, Decl *D,
                                    const ParsedAttr &Attr) const override {
-    if (Attr.getNumArgs() == 0 && Attr.isCXX11Attribute() &&
-        Attr.hasScope()) {
+    if (Attr.getNumArgs() == 0 && Attr.isCXX11Attribute() && Attr.hasScope()) {
       unsigned ID = S.getDiagnostics().getCustomDiagID(
           DiagnosticsEngine::Error,
           "the scoped C++11 spelling [[perfify::op]] cannot carry an "
@@ -893,8 +973,8 @@ struct PerfifyOpAttrInfo : public ParsedAttrInfo {
   }
 };
 
-static ParsedAttrInfoRegistry::Add<PerfifyOpAttrInfo>
-    PerfifyOpX("perfify_op", "");
+static ParsedAttrInfoRegistry::Add<PerfifyOpAttrInfo> PerfifyOpX("perfify_op",
+                                                                 "");
 
 // Gives a function an assumed cost, e.g.
 // __attribute__((perfify_func_cost("10"))) void hello() { ... }.
@@ -1033,6 +1113,61 @@ struct PerfifyLoopAttrInfo : public ParsedAttrInfo {
 
 static ParsedAttrInfoRegistry::Add<PerfifyLoopAttrInfo>
     PerfifyLoopX("perfify_loop", "");
+class PragmaPerfifyCostHandler : public PragmaHandler {
+public:
+  PragmaPerfifyCostHandler() : PragmaHandler("perfify_cost") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::string_literal)) {
+      PP.Diag(Tok.getLocation(), diag::err_expected) << tok::string_literal;
+      return;
+    } else {
+      std::string Cost;
+      if (!PP.FinishLexStringLiteral(Tok, Cost, "pragma perfify_cost", false)) {
+        return;
+      } else if (Tok.isNot(tok::eod)) {
+        PP.Diag(Tok, diag::ext_pp_extra_tokens_at_eol) << "pragma perfify_cost";
+        return;
+      }
+      GlobalPerfifyCosts.push_back(Cost);
+    }
+  }
+};
+
+class PragmaPerfifyFuncCostHandler : public PragmaHandler {
+public:
+  PragmaPerfifyFuncCostHandler() : PragmaHandler("perfify_func_cost") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducer Introducer,
+                    Token &Tok) override {
+    SourceLocation Loc = Introducer.Loc;
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::string_literal)) {
+      PP.Diag(Tok.getLocation(), diag::err_expected) << tok::string_literal;
+      return;
+    } else {
+      std::string Def;
+      if (!PP.FinishLexStringLiteral(Tok, Def, "pragma perfify_func_cost", false)) {
+        return;
+      } else if (Tok.isNot(tok::eod)) {
+        PP.Diag(Tok, diag::ext_pp_extra_tokens_at_eol) << "pragma perfify_func_cost";
+        return;
+      }
+      auto [Name, Cost] = StringRef(Def).split('=');
+      if (!StringRef(Def).contains('=') || Name.trim().empty() || Cost.trim().empty()) {
+        auto &D = PP.getDiagnostics();
+        D.Report(Loc, D.getCustomDiagID(DiagnosticsEngine::Error, "expected '<function> = <cost>' in " "pragma perfify_func_cost"));
+        return;
+      }
+      GlobalPerfifyFuncCosts.push_back({Name.trim().str(), Cost.trim().str(), Loc});
+    }
+  }
+};
+static PragmaHandlerRegistry::Add<PragmaPerfifyFuncCostHandler>
+    PerfifyFuncCostPragmaX("perfify_func_cost", "perfify function cost definition");
+
+static PragmaHandlerRegistry::Add<PragmaPerfifyCostHandler>
+    PerfifyCostX("perfify_cost", "perfify op cost definition");
 
 struct EnzymeShouldRecomputeAttrInfo : public ParsedAttrInfo {
   EnzymeShouldRecomputeAttrInfo() {
