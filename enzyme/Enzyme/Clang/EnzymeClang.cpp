@@ -28,6 +28,7 @@
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/AST/Mangle.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/MacroBuilder.h"
@@ -178,6 +179,58 @@ static void emitPerfifyCosts(Sema &S) {
   }
 }
 
+// get the function's original name
+static std::string resolvePerfifyFuncCost(Sema &S, const PerfifyFuncCost &FC) {
+  auto &AST = S.getASTContext();
+  auto &D = S.getDiagnostics();
+  auto Result = AST.getTranslationUnitDecl()->lookup(DeclarationName(&AST.Idents.get(FC.Name)));
+  auto fail = [&](const char *Msg) {
+    D.Report(FC.Loc, D.getCustomDiagID(DiagnosticsEngine::Error, "%0")) << std::string(Msg) + " '" + FC.Name + "'";
+    return std::string();
+  };
+  if (Result.empty()) {
+    return fail("no function named");
+  } else if (!Result.isSingleResult()) {
+    return fail("cannot assign perfify cost to an overloaded function");
+  }
+  auto *FD = dyn_cast<FunctionDecl>(Result.front());
+  if (!FD) {
+    return fail("perfify cost target is not a function:");
+  }
+  std::unique_ptr<MangleContext> MC(AST.createMangleContext());
+  if (!MC->shouldMangleDeclName(FD)) {
+    return FD->getName().str();
+  }
+  std::string Symbol;
+  llvm::raw_string_ostream OS(Symbol);
+  MC->mangleName(GlobalDecl(FD), OS);
+  return Symbol;
+}
+
+// Generate a perfify_func_cost=<cost> associated with each #pragma perfify_func_cost
+static void emitPerfifyFuncCosts(Sema &S) {
+  auto &AST = S.getASTContext();
+  SourceLocation loc;
+  DeclContext *ctx = AST.getTranslationUnitDecl();
+  for (size_t i = 0, e = GlobalPerfifyFuncCosts.size(); i != e; ++i) {
+    std::string Symbol = resolvePerfifyFuncCost(S, GlobalPerfifyFuncCosts[i]);
+    if (Symbol.empty()) {
+      continue;
+    }
+    auto &Id = AST.Idents.get("__perfify_named_func_cost_" + std::to_string(i));
+    auto VD =
+        VarDecl::Create(AST, ctx, loc, loc, &Id, AST.IntTy, nullptr, SC_Static);
+    VD->setImplicit(true);
+    VD->setInit(
+        IntegerLiteral::Create(AST, llvm::APInt(32, 0), AST.IntTy, loc));
+    VD->addAttr(UsedAttr::CreateImplicit(AST));
+    VD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, "perfify_named_func_cost=" + Symbol + " = " + GlobalPerfifyFuncCosts[i].Cost, nullptr, 0));
+    ctx->addDecl(VD);
+    S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(VD));
+  }
+}
+
 void MakeGlobalOfFn(FunctionDecl *FD, CompilerInstance &CI) {
   // if (FD->isLateTemplateParsed()) return;
   // TODO save any type info into string like attribute
@@ -306,6 +359,7 @@ public:
     emitOptimizationRules(S, GlobalOptimizationRules);
     emitTesseraArgTypeGlobals(S, TesseraArgTypeGlobals);
     emitPerfifyCosts(S);
+    emitPerfifyFuncCosts(S);
   }
 };
 
