@@ -86,6 +86,9 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
+#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/IR/Dominators.h"
 
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/Analysis/CallGraph.h"
@@ -258,6 +261,33 @@ SmallVector<CallBase *> gatherCallers(Function *F) {
   return ToHandle;
 }
 
+// Whether inlining a helper leaves its runtime call with a known kernel. V is
+// what the caller passes for the kernel parameter: the kernel itself, or with
+// ByRef, the local variable holding it. A caller's own parameter also counts,
+// since a later round inlines that caller too.
+bool canResolveKernel(Value *V, bool ByRef) {
+  V = V->stripPointerCasts();
+  if (isa<Argument>(V))
+    return true;
+  if (!ByRef) {
+    if (auto *LI = dyn_cast<LoadInst>(V))
+      return isa<Argument>(LI->getPointerOperand()->stripPointerCasts());
+    return isa<Function>(V);
+  }
+  auto *Slot = dyn_cast<AllocaInst>(V);
+  if (!Slot)
+    return false;
+  Value *Stored = nullptr;
+  for (User *U : Slot->users())
+    if (auto *SI = dyn_cast<StoreInst>(U);
+        SI && SI->getPointerOperand() == Slot) {
+      if (Stored && Stored != SI->getValueOperand())
+        return false;
+      Stored = SI->getValueOperand();
+    }
+  return Stored && canResolveKernel(Stored, /*ByRef=*/false);
+}
+
 void fixup(Module &M) {
 
   // Map of runtime function, index of the entry fn
@@ -409,6 +439,92 @@ void fixup(Module &M) {
               InlineFunction(*CI, IFI, /*MergeAttributes=*/false);
           assert(Res.isSuccess());
     }
+  }
+
+  // A runtime call can get its kernel from a helper's parameter instead of
+  // naming the stub: the helper takes the kernel by value, or by reference to
+  // a slot its caller stored the stub into. The replacement below then sees
+  // only a pointer and has to look the kernel up at runtime. Inline such
+  // helpers into callers that pass a known stub, and promote the slot, so the
+  // runtime call names the stub.
+  //
+  // Example code before:
+  //  void byValue(void *fn) {
+  //     cudaFuncGetAttributes(&attr, fn);
+  //  }
+  //  void byRef(void *const &fn) {
+  //     cudaFuncGetAttributes(&attr, fn);
+  //  }
+  //  void main() {
+  //     void *slot = stubFunc;
+  //     byValue(stubFunc);
+  //     byRef(slot);
+  //  }
+  //
+  // Example code after:
+  //  void main() {
+  //     cudaFuncGetAttributes(&attr, stubFunc);
+  //     cudaFuncGetAttributes(&attr, stubFunc);
+  //  }
+  //
+  // Each round moves a runtime call up one helper. Wrapper chains are a few
+  // calls deep; the bound only stops helpers that call each other from being
+  // inlined into each other forever.
+  constexpr unsigned MaxHelperRounds = 4;
+  for (unsigned Round = 0; Round < MaxHelperRounds; Round++) {
+    // Each helper's kernel parameters, and whether each is a reference.
+    MapVector<Function *, SmallMapVector<unsigned, bool, 2>> Helpers;
+    for (auto &pair : runtime_fns)
+      if (auto rtFunc = M.getFunction(pair.first))
+        for (CallBase *CI : gatherCallers(rtFunc)) {
+          if (CI->arg_size() <= (unsigned)pair.second)
+            continue;
+          Value *Kernel = CI->getArgOperand(pair.second)->stripPointerCasts();
+          bool ByRef = false;
+          if (auto *LI = dyn_cast<LoadInst>(Kernel)) {
+            Kernel = LI->getPointerOperand()->stripPointerCasts();
+            ByRef = true;
+          }
+          if (auto *Param = dyn_cast<Argument>(Kernel))
+            Helpers[Param->getParent()].insert({Param->getArgNo(), ByRef});
+        }
+    bool Inlined = false;
+    for (auto &[Helper, Params] : Helpers) {
+      for (CallBase *CB : gatherCallers(Helper)) {
+        Function *Caller = CB->getFunction();
+        if (Caller == Helper)
+          continue;
+        bool Resolves = false;
+        SmallSetVector<AllocaInst *, 2> Slots;
+        for (auto [ArgNo, ByRef] : Params) {
+          Value *Arg = CB->getArgOperand(ArgNo)->stripPointerCasts();
+          if (!canResolveKernel(Arg, ByRef))
+            continue;
+          Resolves = true;
+          if (auto *AI = dyn_cast<AllocaInst>(Arg))
+            Slots.insert(AI);
+        }
+        if (!Resolves)
+          continue;
+        InlineFunctionInfo IFI;
+        if (!InlineFunction(*CB, IFI, /*MergeAttributes=*/false).isSuccess())
+          continue;
+        Inlined = true;
+        SmallVector<AllocaInst *> Promotable;
+        for (AllocaInst *AI : Slots)
+          if (AI->isStaticAlloca() && isAllocaPromotable(AI))
+            Promotable.push_back(AI);
+        if (!Promotable.empty()) {
+          DominatorTree DT(*Caller);
+          AssumptionCache AC(*Caller);
+          PromoteMemToReg(Promotable, DT, &AC);
+        }
+      }
+      if (Helper->use_empty() && Helper->isDiscardableIfUnused())
+        Helper->eraseFromParent();
+    }
+    if (!Inlined)
+      break;
   }
 
   // For all callers of the host-side stub function, that really should have
