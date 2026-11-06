@@ -149,6 +149,20 @@ jobs:
           cmake ../enzyme -GNinja -DCMAKE_BUILD_TYPE=${{ matrix.build }} -DLLVM_DIR=${{ env.BASE_DIR }}/llvm-project/mlir-build -DREACTANT_CLANG=ON
           ninja
 
+    - name: Check plugin loading with the matching Clang
+      shell: bash
+      run: |
+          set -euo pipefail
+          llvm_build="${BASE_DIR}/llvm-project/mlir-build"
+          plugin_build="${BASE_DIR}/Reactant/reactant-build"
+          "$llvm_build/bin/llvm-config" --version --assertion-mode
+          llvm_major=$("$llvm_build/bin/llvm-config" --version | cut -d. -f1)
+          plugin="$plugin_build/Enzyme/libClangReactant-${llvm_major}.so"
+          test -f "$plugin"
+          printf 'int main() { return 0; }\n' > "$plugin_build/plugin-load.cpp"
+          "$llvm_build/bin/clang++" -fplugin="$plugin" -fsyntax-only \
+            "$plugin_build/plugin-load.cpp"
+
     - uses: bazel-contrib/setup-bazel@0.19.1
       name: Set up Bazel
       with:
