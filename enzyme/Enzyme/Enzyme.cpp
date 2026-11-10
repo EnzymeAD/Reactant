@@ -1216,7 +1216,8 @@ private:
             Fn.getName().contains("__enzyme_trace") ||
             Fn.getName().contains("__enzyme_condition") ||
             Fn.getName().contains("__enzyme_set_checkpointing") ||
-            Fn.getName().contains("__enzyme_set_mincut")))
+            Fn.getName().contains("__enzyme_set_mincut") ||
+            Fn.getName().contains("__enzyme_set_loop_invariant_cache")))
         continue;
 
       auto *BB = llvm::BasicBlock::Create(M.getContext(), "", &Fn);

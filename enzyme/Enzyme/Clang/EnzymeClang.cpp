@@ -503,6 +503,57 @@ struct EnzymeLoopMincutSetAttrInfo : public ParsedAttrInfo {
 static ParsedAttrInfoRegistry::Add<EnzymeLoopMincutSetAttrInfo>
     X2("enzyme_set_mincut", "");
 
+struct EnzymeLoopInvariantCacheSetAttrInfo : public ParsedAttrInfo {
+  EnzymeLoopInvariantCacheSetAttrInfo() {
+    OptArgs = 1;
+    static constexpr Spelling S[] = {
+        {ParsedAttr::AS_GNU, "enzyme_set_loop_invariant_cache"},
+#if LLVM_VERSION_MAJOR > 17
+        {ParsedAttr::AS_C23, "enzyme_set_loop_invariant_cache"},
+#else
+        {ParsedAttr::AS_C2x, "enzyme_set_loop_invariant_cache"},
+#endif
+        {ParsedAttr::AS_CXX11, "enzyme_set_loop_invariant_cache"},
+        {ParsedAttr::AS_CXX11, "enzyme::set_loop_invariant_cache"}};
+    Spellings = S;
+  }
+
+  bool diagAppertainsToStmt(Sema &S, const ParsedAttr &Attr,
+                            const Stmt *St) const override {
+    return ExpectForStatement(S, Attr, St);
+  }
+
+  AttrHandling handleStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &Attr,
+                                   class Attr *&Result) const override {
+    if (Attr.getNumArgs() != 1) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "'enzyme_set_loop_invariant_cache' takes a single argument");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+
+    auto *Arg0 = Attr.getArgAsExpr(0);
+    clang::Expr::EvalResult EvalRes;
+
+    if (!Arg0->EvaluateAsInt(EvalRes, S.getASTContext())) {
+      unsigned ID = S.getDiagnostics().getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "argument to 'enzyme_set_loop_invariant_cache' must be an "
+          "integer constant");
+      S.Diag(Attr.getLoc(), ID);
+      return AttributeNotApplied;
+    }
+    uint64_t enable = EvalRes.Val.getInt().getZExtValue();
+
+    emitFunctionCall(S, St, "__enzyme_set_loop_invariant_cache", {enable});
+    return AttributeApplied;
+  }
+};
+
+static ParsedAttrInfoRegistry::Add<EnzymeLoopInvariantCacheSetAttrInfo>
+    XLoopInvariantCache("enzyme_set_loop_invariant_cache", "");
+
 struct EnzymeLoopCheckpointingEnableAttrInfo : public ParsedAttrInfo {
   EnzymeLoopCheckpointingEnableAttrInfo() {
     OptArgs = 2;
