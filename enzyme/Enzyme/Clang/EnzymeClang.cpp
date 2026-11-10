@@ -990,7 +990,8 @@ enum TesseraAttrKind {
   TesseraGuarantees,
   TesseraAssumes,
   TesseraPreserves,
-  TesseraReadonly
+  TesseraReadonly,
+  TesseraCost
 };
 
 // Each one's GNU spelling, which also names its annotation, and its scoped
@@ -1001,7 +1002,8 @@ static constexpr const char *TesseraAttrSpellings[][2] = {
     {"tessera_guarantees", "tessera::guarantees"},
     {"tessera_assumes", "tessera::assumes"},
     {"tessera_preserves", "tessera::preserves"},
-    {"tessera_readonly", "tessera::readonly"}};
+    {"tessera_readonly", "tessera::readonly"},
+    {"tessera_cost", "tessera::cost"}};
 
 // The strings a tessera attribute is given, joined with ','. A malformed
 // tessera attribute only costs what it would have given, so it is reported as
@@ -1256,6 +1258,8 @@ static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraPreserves>>
     T5("tessera_preserves", "");
 static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraReadonly>>
     T6("tessera_readonly", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraCost>>
+    T7("tessera_cost", "");
 
 struct PerfifyOpAttrInfo : public ParsedAttrInfo {
   PerfifyOpAttrInfo() {
