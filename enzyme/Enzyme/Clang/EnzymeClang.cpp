@@ -533,6 +533,67 @@ static void spliceTesseraFacts(ASTContext &AST, Decl *D) {
       spliceTesseraFacts(AST, inner);
 }
 
+// The names of a function's argument positions, joined with ',', as
+// lift-tessera-annotations counts them: `this` first for a member function.
+// An unnamed parameter has an empty name.
+static std::string getTesseraParamNames(const FunctionDecl *FD) {
+  SmallVector<StringRef> names;
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  if (MD && MD->isInstance())
+    names.push_back("this");
+  for (const ParmVarDecl *param : FD->parameters())
+    names.push_back(param->getName());
+  return llvm::join(names, ",");
+}
+
+// The names of the parameters marked `noescape`, joined with ','. Clang lowers
+// noescape to captures(address), which the MLIR import drops, so it is passed
+// on as an annotation instead. Tessera reads it as: the call keeps no pointer
+// to the object, or into it, past its return.
+// An unnamed parameter is given by its position, which counts `this`.
+static std::string getTesseraNoEscapeNames(const FunctionDecl *FD) {
+  SmallVector<std::string> names;
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  unsigned first = MD && MD->isInstance() ? 1 : 0;
+  const auto *proto = FD->getType()->getAs<FunctionProtoType>();
+  for (auto [index, param] : llvm::enumerate(FD->parameters()))
+    if (param->hasAttr<NoEscapeAttr>() ||
+        (proto && proto->getExtParameterInfo(index).isNoEscape()))
+      names.push_back(param->getName().empty()
+                          ? std::to_string(first + index)
+                          : param->getName().str());
+  return llvm::join(names, ",");
+}
+
+// Pass on `noescape` from a function no tessera attribute is on, as one that
+// has one does (TesseraAttrInfo), so that writing it is never ignored. Only
+// the annotations: the function is left to inline as it would.
+static void annotateTesseraNoEscape(ASTContext &AST, Decl *D) {
+  auto *FD = dyn_cast<FunctionDecl>(D);
+  if (!FD) {
+    // A namespace, an extern "C" block or a class reaches the consumer whole.
+    if (auto *DC = dyn_cast<DeclContext>(D))
+      for (Decl *inner : DC->decls())
+        annotateTesseraNoEscape(AST, inner);
+    return;
+  }
+  std::string noEscape = getTesseraNoEscapeNames(FD);
+  if (noEscape.empty())
+    return;
+  bool hasParams = false;
+  for (const auto *annot : FD->specific_attrs<AnnotateAttr>()) {
+    StringRef text = annot->getAnnotation();
+    if (text.starts_with("tessera_noescape="))
+      return;
+    hasParams |= text.starts_with("tessera_params=");
+  }
+  FD->addAttr(AnnotateAttr::CreateImplicit(AST, "tessera_noescape=" + noEscape,
+                                           nullptr, 0));
+  if (!hasParams)
+    FD->addAttr(AnnotateAttr::CreateImplicit(
+        AST, "tessera_params=" + getTesseraParamNames(FD), nullptr, 0));
+}
+
 // Emit the marker of each fact that was placed, and say which could not be.
 static void emitTesseraFactMarkers(Sema &S) {
   for (TesseraFactSite &site : TesseraFactSites) {
@@ -672,8 +733,10 @@ public:
   ~EnzymePlugin() {}
 
   bool HandleTopLevelDecl(DeclGroupRef DG) override {
-    for (Decl *D : DG)
+    for (Decl *D : DG) {
       spliceTesseraFacts(CI.getASTContext(), D);
+      annotateTesseraNoEscape(CI.getASTContext(), D);
+    }
     return true;
   }
 
@@ -1122,7 +1185,12 @@ enum TesseraAttrKind {
   TesseraGuarantees,
   TesseraAssumes,
   TesseraPreserves,
-  TesseraReadonly
+  TesseraUnchanged,
+  // Older spellings of tessera_unchanged, still accepted.
+  TesseraKeeps,
+  TesseraReadonly,
+  // `noescape` for `this`, which C's attribute can't be written on.
+  TesseraNoEscape
 };
 
 // Each one's GNU spelling, which also names its annotation, and its scoped
@@ -1133,7 +1201,10 @@ static constexpr const char *TesseraAttrSpellings[][2] = {
     {"tessera_guarantees", "tessera::guarantees"},
     {"tessera_assumes", "tessera::assumes"},
     {"tessera_preserves", "tessera::preserves"},
-    {"tessera_readonly", "tessera::readonly"}};
+    {"tessera_unchanged", "tessera::unchanged"},
+    {"tessera_keeps", "tessera::keeps"},
+    {"tessera_readonly", "tessera::readonly"},
+    {"tessera_noescape", "tessera::noescape"}};
 
 // The strings a tessera attribute is given, joined with ','. A malformed
 // tessera attribute only costs what it would have given, so it is reported as
@@ -1164,19 +1235,6 @@ getTesseraStrings(Sema &S, const ParsedAttr &Attr, StringRef attrName) {
     strings += literal->getString();
   }
   return strings;
-}
-
-// The names of a function's argument positions, joined with ',', as
-// lift-tessera-annotations counts them: `this` first for a member function.
-// An unnamed parameter has an empty name.
-static std::string getTesseraParamNames(const FunctionDecl *FD) {
-  SmallVector<StringRef> names;
-  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
-  if (MD && MD->isInstance())
-    names.push_back("this");
-  for (const ParmVarDecl *param : FD->parameters())
-    names.push_back(param->getName());
-  return llvm::join(names, ",");
 }
 
 // For each argument position of a tessera op, `this` first, a global whose
@@ -1340,11 +1398,28 @@ template <TesseraAttrKind Kind> struct TesseraAttrInfo : public ParsedAttrInfo {
       return AttributeNotApplied;
     auto *FD = cast<FunctionDecl>(D);
     auto &AST = S.getASTContext();
+    if constexpr (Kind == TesseraNoEscape) {
+      // Only `this`: a parameter that has a name takes C's noescape, which
+      // every compiler reads.
+      const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+      if (*strings != "this" || !MD || !MD->isInstance()) {
+        unsigned ID = S.getDiagnostics().getCustomDiagID(
+            DiagnosticsEngine::Warning,
+            "'%0' takes only \"this\", on a member function; mark a "
+            "parameter with __attribute__((noescape)) instead; it is ignored");
+        S.Diag(Attr.getLoc(), ID) << attrName;
+        return AttributeNotApplied;
+      }
+    }
     FD->addAttr(AnnotateAttr::Create(AST,
                                      (Twine(attrName) + "=" + *strings).str(),
                                      nullptr, 0, Attr.getRange()));
     FD->addAttr(AnnotateAttr::CreateImplicit(
         AST, "tessera_params=" + getTesseraParamNames(FD), nullptr, 0));
+    std::string noEscape = getTesseraNoEscapeNames(FD);
+    if (!noEscape.empty())
+      FD->addAttr(AnnotateAttr::CreateImplicit(
+          AST, "tessera_noescape=" + noEscape, nullptr, 0));
     if (isOp) {
       // A rule's right-hand side can call the op whether or not anything
       // here does, so the function has to be in the module, along with the
@@ -1353,14 +1428,21 @@ template <TesseraAttrKind Kind> struct TesseraAttrInfo : public ParsedAttrInfo {
           AST, "tessera_arg_types=" + makeTesseraArgTypeCarriers(S, FD),
           nullptr, 0));
       FD->addAttr(clang::UsedAttr::CreateImplicit(AST));
+      // A rule reads the facts that hold at one call. LLVM merges identical
+      // calls at the end of the two sides of an `if` into one after it, where
+      // only what both sides established holds, so a fact stated on one side,
+      // `TESSERA_GUARANTEES("constant_sources(b)"); b->AddDomainIntegrator(i)`,
+      // would be lost.
+      FD->addAttr(NoMergeAttr::CreateImplicit(AST));
       TesseraOpFunctions.push_back(FD);
-    } else if (!FD->hasAttr<AlwaysInlineAttr>() &&
+    } else if (Kind != TesseraNoEscape && !FD->hasAttr<AlwaysInlineAttr>() &&
                !FD->hasAttr<NoInlineAttr>()) {
       // A property is read off the call that produced a value, or off the
       // parameters of the function that assumes it, and a handle's off the
       // calls given it, so that call, or that function's own body, has to
       // survive until tessera-apply-pdl runs. LLVM inlines long before the
-      // module reaches Tessera.
+      // module reaches Tessera. Not so for noescape: an inlined body shows
+      // what it stores.
       FD->addAttr(NoInlineAttr::CreateImplicit(AST));
     }
     return AttributeApplied;
@@ -1386,8 +1468,14 @@ static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraAssumes>>
     T4("tessera_assumes", "");
 static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraPreserves>>
     T5("tessera_preserves", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraUnchanged>>
+    T6("tessera_unchanged", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraKeeps>>
+    T7("tessera_keeps", "");
 static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraReadonly>>
-    T6("tessera_readonly", "");
+    T8("tessera_readonly", "");
+static ParsedAttrInfoRegistry::Add<TesseraAttrInfo<TesseraNoEscape>>
+    T9("tessera_noescape", "");
 
 struct PerfifyOpAttrInfo : public ParsedAttrInfo {
   PerfifyOpAttrInfo() {
