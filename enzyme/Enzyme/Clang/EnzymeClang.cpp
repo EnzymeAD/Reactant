@@ -1170,7 +1170,7 @@ static ParsedAttrInfoRegistry::Add<EnzymeFunctionLikeAttrInfo>
 
 // The tessera attributes. Each passes the strings it is given on as written,
 // as one annotation, "tessera_guarantees=SPD(M)" or
-// "tessera_preserves=SPD,A,B", and lift-tessera-annotations, which every
+// "tessera_preserves=sorted(this)", and lift-tessera-annotations, which every
 // frontend shares, reads them: see there for what they say. What the plugin
 // adds is only what Clang alone knows -- the names of the parameters, the
 // types behind them, and the variables in scope at a statement.
