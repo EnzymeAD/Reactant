@@ -247,7 +247,7 @@ struct Visitor : public RecursiveASTVisitor<Visitor> {
 
 extern "C" void registerReactant(llvm::PassBuilder &PB,
                                  std::vector<std::string> gpubins,
-                                 std::string outfile);
+                                 std::string outfile, std::string mlirOutput);
 
 extern "C" void registerExporter(llvm::PassBuilder &PB, std::string file);
 
@@ -292,8 +292,17 @@ public:
         // gpubins.push_back(offloadBinaryToEmbedFile(CGOpts));
       }
       std::string file = CI.getFrontendOpts().OutputFile;
-      CGOpts.PassBuilderCallbacks.push_back(
-          [=](llvm::PassBuilder &PB) { registerReactant(PB, gpubins, file); });
+      // -reactant-export-mlir-only writes the raised MLIR to clang's -o, but
+      // only under -emit-llvm-only, the one action that runs the optimization
+      // pipeline without writing that file itself. Any other action opens -o
+      // before this plugin is created and renames its own output onto it at
+      // the end, so there the MLIR goes to stdout.
+      std::string mlirOutput;
+      if (CI.getFrontendOpts().ProgramAction == clang::frontend::EmitLLVMOnly)
+        mlirOutput = file;
+      CGOpts.PassBuilderCallbacks.push_back([=](llvm::PassBuilder &PB) {
+        registerReactant(PB, gpubins, file, mlirOutput);
+      });
     }
 
     CI.getPreprocessorOpts().Includes.push_back("/enzyme/enzyme/version");

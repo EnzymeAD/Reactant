@@ -219,8 +219,11 @@ llvm::cl::opt<bool> SpecializeIntScalars(
 
 llvm::cl::opt<bool> ExportMLIROnly(
     "reactant-export-mlir-only", cl::init(false), cl::Hidden,
-    cl::desc("Stop the round trip after the MLIR pipeline and hand back the "
-             "raised module as MLIR text instead of lowering it to LLVM IR"));
+    cl::desc("Stop the round trip after the MLIR pipeline and write the "
+             "raised module as MLIR text instead of lowering it to LLVM IR. "
+             "The text goes to clang's -o when clang writes no output of its "
+             "own (-Xclang -emit-llvm-only), and to stdout otherwise; the "
+             "LLVM module is left empty"));
 
 llvm::cl::opt<int> LateSink(
     "reactant-late-sink", cl::init(2), cl::Hidden,
@@ -684,8 +687,12 @@ class ReactantBase {
 public:
   std::vector<std::string> gpubins;
   std::string outfile;
-  ReactantBase(const std::vector<std::string> &gpubins, std::string outfile)
-      : gpubins(gpubins), outfile(outfile) {}
+  // Where -reactant-export-mlir-only writes the raised MLIR; empty or "-" is
+  // stdout.
+  std::string mlirOutput;
+  ReactantBase(const std::vector<std::string> &gpubins, std::string outfile,
+               std::string mlirOutput)
+      : gpubins(gpubins), outfile(outfile), mlirOutput(mlirOutput) {}
 
   bool run(Module &M) {
     auto DisableSandbox = llvm::sys::sandbox::scopedDisable();
@@ -1067,7 +1074,7 @@ public:
         .verifyEach = verifyEach,
         .parallelCanonicalize = parallelCanonicalize,
         .lateSink = lateSink,
-        .exportMLIROnly = ExportMLIROnly.getValue(),
+        .exportMLIROnly = ExportMLIROnly,
         .specializeIndexStrides = specializeIndexStrides,
         .unrollMaxTripCount = unrollMaxTripCount,
         .unrollMaxNestedOps = unrollMaxNestedOps,
@@ -1120,6 +1127,27 @@ public:
     // module's asm to whatever remains here: keeping ours would define
     // fatbinData twice.
     M.removeModuleInlineAsm();
+
+    // The round trip stopped before the lowering and returned MLIR text,
+    // which parseIR below cannot take. The module stays empty, so whatever
+    // runs after this pass does not build an object from the unraised input.
+    if (ExportMLIROnly) {
+      if (mlirOutput.empty() || mlirOutput == "-") {
+        llvm::outs() << newMod;
+        llvm::outs().flush();
+      } else {
+        std::error_code EC;
+        llvm::raw_fd_ostream os(mlirOutput, EC);
+        if (EC) {
+          llvm::errs() << "Reactant: cannot write the raised MLIR to "
+                       << mlirOutput << ": " << EC.message() << "\n";
+          exit(1);
+        }
+        os << newMod;
+      }
+      M.getContext().setDiscardValueNames(discard);
+      return changed;
+    }
 
     llvm::SMDiagnostic Err;
     auto llvmModule = llvm::parseIR(
@@ -1175,8 +1203,9 @@ private:
 
 public:
   using Result = llvm::PreservedAnalyses;
-  ReactantNewPM(const std::vector<std::string> &gpubins, std::string outfile)
-      : ReactantBase(gpubins, outfile) {}
+  ReactantNewPM(const std::vector<std::string> &gpubins, std::string outfile,
+                std::string mlirOutput)
+      : ReactantBase(gpubins, outfile, mlirOutput) {}
 
   Result run(llvm::Module &M, llvm::ModuleAnalysisManager &MAM) {
     return ReactantBase::run(M) ? PreservedAnalyses::none()
@@ -1317,7 +1346,7 @@ extern "C" void registerReactantAndPassPipeline(llvm::PassBuilder &PB,
 
 extern "C" void registerReactant(llvm::PassBuilder &PB,
                                  std::vector<std::string> gpubinaries,
-                                 std::string outfile) {
+                                 std::string outfile, std::string mlirOutput) {
 
   llvm::errs() << " registering reactant\n";
 
@@ -1343,13 +1372,13 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
 #else
   auto loadPass = [=](ModulePassManager &MPM, OptimizationLevel Level)
 #endif
-  { MPM.addPass(ReactantNewPM(gpubinaries, outfile)); };
+  { MPM.addPass(ReactantNewPM(gpubinaries, outfile, mlirOutput)); };
 
   PB.registerPipelineParsingCallback(
       [=](llvm::StringRef Name, llvm::ModulePassManager &MPM,
           llvm::ArrayRef<llvm::PassBuilder::PipelineElement>) {
         if (Name == "reactant") {
-          MPM.addPass(ReactantNewPM(gpubinaries, outfile));
+          MPM.addPass(ReactantNewPM(gpubinaries, outfile, mlirOutput));
           return true;
         }
         return false;
@@ -1369,7 +1398,7 @@ extern "C" void registerReactant(llvm::PassBuilder &PB,
 }
 
 extern "C" void registerReactant2(llvm::PassBuilder &PB) {
-  registerReactant(PB, {}, "");
+  registerReactant(PB, {}, "", "");
 }
 
 extern "C" ::llvm::PassPluginLibraryInfo LLVM_ATTRIBUTE_WEAK
