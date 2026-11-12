@@ -1086,6 +1086,14 @@ struct PerfifyLoopAttrInfo : public ParsedAttrInfo {
     Marker->setBody(CompoundStmt::Create(AST, {}, {}, loc, loc));
     Marker->addAttr(WeakAttr::CreateImplicit(AST));
     Marker->addAttr(NoInlineAttr::CreateImplicit(AST));
+    // A loop in a CUDA kernel calls the marker from device code, so the
+    // marker needs a device body too; without one the device compile leaves
+    // it an undefined weak declaration and ptxas fails ("Unresolved extern
+    // function").
+    if (AST.getLangOpts().CUDA) {
+      Marker->addAttr(CUDAHostAttr::CreateImplicit(AST));
+      Marker->addAttr(CUDADeviceAttr::CreateImplicit(AST));
+    }
     Marker->addAttr(AnnotateAttr::CreateImplicit(
         AST, ("perfify_loop=" + Literal->getString()).str(), nullptr, 0));
     S.getASTConsumer().HandleTopLevelDecl(DeclGroupRef(Marker));
