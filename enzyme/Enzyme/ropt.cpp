@@ -45,7 +45,7 @@ static cl::opt<std::string> ReactantOutfile(
 
 extern "C" void registerReactant(PassBuilder &PB,
                                  std::vector<std::string> gpubinaries,
-                                 std::string outfile);
+                                 std::string outfile, std::string mlirOutput);
 
 extern "C" int optMain(int argc, char **argv,
                        ArrayRef<std::function<void(PassBuilder &)>>
@@ -57,7 +57,10 @@ int main(int argc, char **argv) {
   std::function<void(PassBuilder &)> plugins[] = {[](PassBuilder &PB) {
     registerReactant(
         PB, std::vector<std::string>(GPUBinaries.begin(), GPUBinaries.end()),
-        ReactantOutfile);
+        ReactantOutfile,
+        // opt writes its own -o, so -reactant-export-mlir-only prints the
+        // MLIR to stdout here; pass -disable-output to keep stdout clean.
+        /*mlirOutput=*/"");
   }};
   return optMain(argc, argv, plugins);
 }
